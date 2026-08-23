@@ -1,0 +1,72 @@
+name = "aether-panel"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = [ "nodejs_compat" ]
+
+# -------- D1 database --------
+# Create with:  wrangler d1 create aether
+[[d1_databases]]
+binding = "DB"
+database_name = "aether"
+database_id = "665dbdaf-5d94-4454-9a05-3ab815bb0b37"
+migrations_dir = "migrations"
+
+# -------- Durable Objects (SQLite-backed for free plan) --------
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserState", "PoolState", "RateLimiter"]
+
+[durable_objects]
+bindings = [
+  { name = "USER_STATE", class_name = "UserState" },
+  { name = "POOL_STATE",  class_name = "PoolState"  },
+  { name = "RATE_LIMIT",  class_name = "RateLimiter" }
+]
+
+# -------- KV namespaces (caches) --------
+# Create with:  wrangler kv namespace create AETHER_KV
+[[kv_namespaces]]
+binding = "KV"
+id = "da1c1147e7d64c339092bd6dd1311d09"
+
+# -------- R2 bucket is OPTIONAL (paid plan). Uncomment to enable.
+# Create with:  wrangler r2 bucket create aether-data
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "aether-data"
+
+# -------- Analytics Engine (optional; requires enabling in dashboard) --------
+# [[analytics_engine_datasets]]
+# binding = "METRICS"
+# dataset = "aether_metrics"
+
+# -------- Queues (batched writes) --------
+# Create with:  wrangler queues create aether-writes
+[[queues.producers]]
+binding = "WRITE_QUEUE"
+queue = "aether-writes"
+
+[[queues.consumers]]
+queue = "aether-writes"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+
+# -------- Scheduled (cron) --------
+[triggers]
+crons = ["* * * * *", "*/5 * * * *", "0 * * * *"]
+
+# -------- Secrets (set via wrangler secret put) --------
+# PANEL_SECRET      - 32+ char random master secret (HMAC + session signing)
+# TELEGRAM_TOKEN    - bot token (optional)
+# TELEGRAM_ADMIN_ID - numeric admin user id (optional)
+
+[vars]
+APP_NAME = "Aether Panel"
+APP_VERSION = "0.1.0"
+PRIMARY_FETCH = "https://raw.githubusercontent.com/panel-zeus/Z-E-U-S/main/ips.txt"
+DEFAULT_DOH = "https://cloudflare-dns.com/dns-query"
+PROXY_FALLBACK_HOSTS = "fra,ams,lhr,cdg,fra2"
+
+[observability]
+enabled = true
