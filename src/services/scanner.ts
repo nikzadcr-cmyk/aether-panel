@@ -1,10 +1,15 @@
-// Scanner service — uses Cloudflare Workers' raw TCP socket API to:
-//   1. Test reachability + latency of Cloudflare edge IPs ("clean IP scanner")
-//   2. Test proxies (SOCKS4 / SOCKS5 / HTTP CONNECT) by connecting through
-//      them to a known-anycast target (1.1.1.1:443) and measuring RTT.
+// Scanner service — measures reachability + latency for Cloudflare edge
+// IPs and for SOCKS4/5/HTTP proxies.
 //
-// Both scanners cap concurrency and wall-clock time so a single request
-// cannot exhaust the Worker's subrequest/CPU budget.
+// IP scanner: Workers blocks raw TCP connect() to Cloudflare anycast IPs
+// (loop prevention), so we measure the TLS+HTTP round-trip with fetch()
+// to https://<ip>/cdn-cgi/trace — the same TCP+TLS handshake a VLESS
+// client performs, which is what determines perceived latency. The HTTP
+// status (200/403) doesn't matter; only that TLS terminated.
+//
+// Proxy scanner: for SOCKS4/5/HTTP we still use connect() because fetch()
+// doesn't support upstream proxies. The Workers port-allowlist applies
+// (only 443/2053/2083/2087/2096/8443 and a handful of HTTP ports).
 
 import { connect } from "cloudflare:sockets";
 
@@ -30,36 +35,51 @@ export interface ProxyScanOptions {
   timeoutMs?: number;
 }
 
+const TLS_PORTS = new Set([443, 2053, 2083, 2087, 2096, 8443]);
+
 /**
- * Probe a single host:port by opening a TCP connection and measuring how
- * long the TLS/TCP handshake acknowledgement takes. We don't do a full TLS
- * handshake — just opening the socket to a TLS port is enough to prove
- * the edge is reachable and is a working Cloudflare anycast IP.
+ * Probe an edge IP by issuing an HTTPS request directly to it. The TLS
+ * handshake + first response byte is what a real VLESS client pays; we
+ * measure that. The HTTP status is irrelevant — Cloudflare returns 403
+ * for direct-IP requests but the TLS still completes successfully.
  */
-export async function tcpPing(host: string, port: number, timeoutMs: number): Promise<number> {
+export async function pingIp(ip: string, port: number, timeoutMs: number): Promise<number> {
   const start = Date.now();
-  const socket = connect({ hostname: host, port }, { secureTransport: "off", allowHalfOpen: false });
-  // Race the opened-promise against a timeout so one slow IP never blocks
-  // the whole scan.
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-      }),
-    ]);
+    // On non-TLS ports we can't really probe the edge (there is no
+    // plain HTTP on CF anycast for most ports); fall back to a TCP
+    // socket for those. On TLS ports, fetch() gives us the real
+    // handshake latency and isn't blocked by the loop-prevention rule
+    // that connect() hits for Cloudflare-owned ranges.
+    if (TLS_PORTS.has(port)) {
+      // Cache-bust with a random query so we never hit an edge cache —
+      // every probe does a fresh TLS handshake.
+      await fetch("https://" + ip + ":" + port + "/cdn-cgi/trace?_=" + Math.random(), {
+        method: "GET",
+        signal: ctrl.signal,
+        headers: { "user-agent": "Nikzad-Scanner/1.0", host: "www.cloudflare.com", "cache-control": "no-cache" },
+        redirect: "manual",
+      } as RequestInit);
+    } else {
+      const socket = connect({ hostname: ip, port }, { secureTransport: "off", allowHalfOpen: false });
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+      ]);
+      socket.close().catch(() => {});
+    }
     return Date.now() - start;
   } finally {
-    if (timer) clearTimeout(timer);
-    socket.close().catch(() => {});
+    clearTimeout(timer);
   }
 }
 
 export async function scanIps(opts: IpScanOptions): Promise<ScanResult[]> {
   const port = opts.port ?? 443;
-  const concurrency = Math.min(25, Math.max(1, opts.concurrency ?? 12));
-  const timeoutMs = Math.min(8000, Math.max(1000, opts.timeoutMs ?? 4000));
+  const concurrency = Math.min(20, Math.max(1, opts.concurrency ?? 10));
+  const timeoutMs = Math.min(8000, Math.max(1500, opts.timeoutMs ?? 4000));
   const out: ScanResult[] = [];
   let cursor = 0;
   async function worker() {
@@ -67,10 +87,10 @@ export async function scanIps(opts: IpScanOptions): Promise<ScanResult[]> {
       const idx = cursor++;
       const ip = opts.ips[idx]!;
       try {
-        const ms = await tcpPing(ip, port, timeoutMs);
+        const ms = await pingIp(ip, port, timeoutMs);
         out[idx] = { target: ip, ok: true, latencyMs: ms };
       } catch (e) {
-        out[idx] = { target: ip, ok: false, latencyMs: -1, error: (e as Error).message };
+        out[idx] = { target: ip, ok: false, latencyMs: -1, error: (e as Error).message.slice(0, 80) };
       }
     }
   }
@@ -174,10 +194,23 @@ export async function testProxy(p: ParsedProxy, testHost: string, testPort: numb
       else if (atyp === 3) { const l = await readExact(reader, 1, timeoutMs); await readExact(reader, l[0]!, timeoutMs); }
       await readExact(reader, 2, timeoutMs);
     } else if (p.type === "socks4") {
-      const ip = testHost.split(".").map((x) => parseInt(x, 10));
-      const buf = new Uint8Array(9);
+      // SOCKS4a: if testHost isn't a dotted-quad IP, set DSTIP = 0.0.0.x (x>0)
+      // and append the hostname as a NUL-terminated string after the USERID.
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(testHost);
+      let dstBytes: number[];
+      let extra = "";
+      if (isIp) {
+        dstBytes = testHost.split(".").map((x) => parseInt(x, 10));
+      } else {
+        dstBytes = [0, 0, 0, 1];
+        extra = testHost;
+      }
+      const u8 = new TextEncoder().encode(extra);
+      const buf = new Uint8Array(9 + u8.length + 1);
       buf.set([0x04, 0x01, (testPort >> 8) & 0xff, testPort & 0xff,
-        ip[0] || 0, ip[1] || 0, ip[2] || 0, ip[3] || 0, 0x00], 0);
+        dstBytes[0]!, dstBytes[1]!, dstBytes[2]!, dstBytes[3]!, 0x00], 0);
+      buf.set(u8, 9);
+      buf[9 + u8.length] = 0x00;
       await writer.write(buf);
       const r = await readExact(reader, 8, timeoutMs);
       if (r[1] !== 0x5a) throw new Error("SOCKS4 connect failed (" + r[1] + ")");

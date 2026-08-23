@@ -4121,29 +4121,37 @@ systemRoutes.put("/settings", requireRole("owner", "admin"), async (c) => {
 
 // src/services/scanner.ts
 import { connect as connect2 } from "cloudflare:sockets";
-async function tcpPing(host, port, timeoutMs) {
+var TLS_PORTS = /* @__PURE__ */ new Set([443, 2053, 2083, 2087, 2096, 8443]);
+async function pingIp(ip, port, timeoutMs) {
   const start = Date.now();
-  const socket = connect2({ hostname: host, port }, { secureTransport: "off", allowHalfOpen: false });
-  let timer;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    await Promise.race([
-      socket.opened,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-      })
-    ]);
+    if (TLS_PORTS.has(port)) {
+      await fetch("https://" + ip + ":" + port + "/cdn-cgi/trace?_=" + Math.random(), {
+        method: "GET",
+        signal: ctrl.signal,
+        headers: { "user-agent": "Nikzad-Scanner/1.0", host: "www.cloudflare.com", "cache-control": "no-cache" },
+        redirect: "manual"
+      });
+    } else {
+      const socket = connect2({ hostname: ip, port }, { secureTransport: "off", allowHalfOpen: false });
+      await Promise.race([
+        socket.opened,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs))
+      ]);
+      socket.close().catch(() => {
+      });
+    }
     return Date.now() - start;
   } finally {
-    if (timer)
-      clearTimeout(timer);
-    socket.close().catch(() => {
-    });
+    clearTimeout(timer);
   }
 }
 async function scanIps(opts) {
   const port = opts.port ?? 443;
-  const concurrency = Math.min(25, Math.max(1, opts.concurrency ?? 12));
-  const timeoutMs = Math.min(8e3, Math.max(1e3, opts.timeoutMs ?? 4e3));
+  const concurrency = Math.min(20, Math.max(1, opts.concurrency ?? 10));
+  const timeoutMs = Math.min(8e3, Math.max(1500, opts.timeoutMs ?? 4e3));
   const out = [];
   let cursor = 0;
   async function worker() {
@@ -4151,10 +4159,10 @@ async function scanIps(opts) {
       const idx = cursor++;
       const ip = opts.ips[idx];
       try {
-        const ms = await tcpPing(ip, port, timeoutMs);
+        const ms = await pingIp(ip, port, timeoutMs);
         out[idx] = { target: ip, ok: true, latencyMs: ms };
       } catch (e) {
-        out[idx] = { target: ip, ok: false, latencyMs: -1, error: e.message };
+        out[idx] = { target: ip, ok: false, latencyMs: -1, error: e.message.slice(0, 80) };
       }
     }
   }
@@ -4259,19 +4267,30 @@ async function testProxy(p, testHost, testPort, timeoutMs) {
       }
       await readExact(reader, 2, timeoutMs);
     } else if (p.type === "socks4") {
-      const ip = testHost.split(".").map((x) => parseInt(x, 10));
-      const buf = new Uint8Array(9);
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(testHost);
+      let dstBytes;
+      let extra = "";
+      if (isIp) {
+        dstBytes = testHost.split(".").map((x) => parseInt(x, 10));
+      } else {
+        dstBytes = [0, 0, 0, 1];
+        extra = testHost;
+      }
+      const u8 = new TextEncoder().encode(extra);
+      const buf = new Uint8Array(9 + u8.length + 1);
       buf.set([
         4,
         1,
         testPort >> 8 & 255,
         testPort & 255,
-        ip[0] || 0,
-        ip[1] || 0,
-        ip[2] || 0,
-        ip[3] || 0,
+        dstBytes[0],
+        dstBytes[1],
+        dstBytes[2],
+        dstBytes[3],
         0
       ], 0);
+      buf.set(u8, 9);
+      buf[9 + u8.length] = 0;
       await writer.write(buf);
       const r = await readExact(reader, 8, timeoutMs);
       if (r[1] !== 90)
@@ -4519,8 +4538,8 @@ scannerRoutes.post("/proxies", requireRole("owner", "admin"), async (c) => {
   const list = body.proxies.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 100);
   const results = await scanProxies({
     proxies: list,
-    testHost: body.testHost,
-    testPort: body.testPort
+    testHost: body.testHost || "example.com",
+    testPort: body.testPort || 443
   });
   const working = results.filter((r) => r.ok).sort((a, b) => a.latencyMs - b.latencyMs);
   return c.json({
@@ -5945,7 +5964,7 @@ function panelHtml(version, bootstrap = false) {
           <h2 class="font-bold mb-1">\u062A\u0633\u062A \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627</h2>
           <p class="text-xs text-slate-400 mb-4">\u067E\u0631\u0648\u062A\u06A9\u0644\u200C\u0647\u0627\u06CC SOCKS4\u060C SOCKS5 \u0648 HTTP \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u0645\u06CC\u200C\u0634\u0648\u0646\u062F. \u0641\u0631\u0645\u062A: <span class="mono text-cyan-300">socks5://user:pass@host:port</span></p>
           <div class="flex flex-wrap gap-2 mb-3">
-            <input id="pscan-test" class="input" placeholder="\u062A\u0633\u062A \u0627\u0632 \u0637\u0631\u06CC\u0642: 1.1.1.1:443" value="1.1.1.1:443" style="max-width:220px"/>
+            <input id="pscan-test" class="input" placeholder="\u062A\u0633\u062A \u0627\u0632 \u0637\u0631\u06CC\u0642: example.com:443" value="example.com:443" style="max-width:220px"/>
             <button id="pscan-run" class="btn btn-primary">\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646</button>
             <button id="pscan-import" class="btn btn-emerald">\u0627\u0641\u0632\u0648\u062F\u0646 \u0633\u0627\u0644\u0645\u200C\u0647\u0627 \u0628\u0647 \u0627\u0633\u062A\u062E\u0631</button>
           </div>
@@ -6673,7 +6692,7 @@ var _scanAliveProxies = [];
 async function runProxyScan(){
   var raw = document.getElementById('pscan-list').value;
   var proxies = raw.split('\\n').map(function(x){return x.trim();}).filter(Boolean);
-  var target = document.getElementById('pscan-test').value.trim() || '1.1.1.1:443';
+  var target = document.getElementById('pscan-test').value.trim() || 'example.com:443';
   var parts = target.split(':');
   if (!proxies.length) return toast('\u0644\u06CC\u0633\u062A \u067E\u0631\u0648\u06A9\u0633\u06CC \u062E\u0627\u0644\u06CC \u0627\u0633\u062A', 'error');
   var btn = document.getElementById('pscan-run');
@@ -6762,7 +6781,7 @@ function statusHtml(user, subLinks) {
 }
 
 // src/services/subscription.ts
-var TLS_PORTS = /* @__PURE__ */ new Set(["443", "2053", "2083", "2087", "2096", "8443"]);
+var TLS_PORTS2 = /* @__PURE__ */ new Set(["443", "2053", "2083", "2087", "2096", "8443"]);
 async function generateSubscription(user, ctx, format = "base64") {
   const links = buildLinks(user, ctx);
   if (format === "raw") {
@@ -6809,7 +6828,7 @@ function buildLinks(user, ctx) {
     frag += "&fragment=" + encodeURIComponent(user.fragment);
   for (const ip of ips) {
     for (const portStr of ports) {
-      const isTls = TLS_PORTS.has(portStr);
+      const isTls = TLS_PORTS2.has(portStr);
       const sec = isTls ? "tls" : "none";
       const remark = "Nikzad|" + user.username + "|" + ip;
       const encRemark = encodeURIComponent(remark);

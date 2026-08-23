@@ -461,7 +461,7 @@ export function panelHtml(version: string, bootstrap = false): string {
       <div data-scanpane="ip">
         <div class="glass rounded-2xl p-5 mb-4">
           <h2 class="font-bold mb-1">پیدا کردن سریع‌ترین IP کلودفلر</h2>
-          <p class="text-xs text-slate-400 mb-4">این ابزار با اتصال TCP مستقیم از داخل ورکر به صدها IP کلودفلر، سریع‌ترین آن‌ها را بر اساس تأخیر پیدا می‌کند. می‌توانی IPهای دلخواه خودت را هم وارد کنی.</p>
+          <p class="text-xs text-slate-400 mb-4">این ابزار با انجام هندشیک TLS مستقیم از داخل ورکر به صدها IP کلودفلر، سریع‌ترین آن‌ها را بر اساس تأخیر پیدا می‌کند. می‌توانی IPهای دلخواه خودت را هم وارد کنی.</p>
           <div class="flex flex-wrap gap-2 mb-3">
             <select id="ipscan-port" class="input" style="max-width:140px">
               <option value="443">پورت 443</option>
@@ -494,7 +494,7 @@ export function panelHtml(version: string, bootstrap = false): string {
           <h2 class="font-bold mb-1">تست پروکسی‌ها</h2>
           <p class="text-xs text-slate-400 mb-4">پروتکل‌های SOCKS4، SOCKS5 و HTTP پشتیبانی می‌شوند. فرمت: <span class="mono text-cyan-300">socks5://user:pass@host:port</span></p>
           <div class="flex flex-wrap gap-2 mb-3">
-            <input id="pscan-test" class="input" placeholder="تست از طریق: 1.1.1.1:443" value="1.1.1.1:443" style="max-width:220px"/>
+            <input id="pscan-test" class="input" placeholder="تست از طریق: example.com:443" value="example.com:443" style="max-width:220px"/>
             <button id="pscan-run" class="btn btn-primary">شروع اسکن</button>
             <button id="pscan-import" class="btn btn-emerald">افزودن سالم‌ها به استخر</button>
           </div>
@@ -1222,7 +1222,7 @@ var _scanAliveProxies = [];
 async function runProxyScan(){
   var raw = document.getElementById('pscan-list').value;
   var proxies = raw.split('\\n').map(function(x){return x.trim();}).filter(Boolean);
-  var target = document.getElementById('pscan-test').value.trim() || '1.1.1.1:443';
+  var target = document.getElementById('pscan-test').value.trim() || 'example.com:443';
   var parts = target.split(':');
   if (!proxies.length) return toast('لیست پروکسی خالی است', 'error');
   var btn = document.getElementById('pscan-run');

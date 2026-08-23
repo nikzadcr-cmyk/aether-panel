@@ -51,8 +51,8 @@ scannerRoutes.post("/proxies", requireRole("owner", "admin"), async (c) => {
   const list = body.proxies.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 100);
   const results = await scanProxies({
     proxies: list,
-    testHost: body.testHost,
-    testPort: body.testPort,
+    testHost: body.testHost || "example.com",
+    testPort: body.testPort || 443,
   });
   const working = results.filter((r) => r.ok).sort((a, b) => a.latencyMs - b.latencyMs);
   return c.json({
