@@ -5064,8 +5064,8 @@ systemRoutes.put("/settings", requireRole("owner", "admin"), async (c) => {
 });
 
 // src/provisioner.ts
-var WORKER_SOURCE_URL = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/dist/index.js";
-var SCHEMA_URL = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/migrations/0001_init.sql";
+var WORKER_SOURCE_URL = "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/dist/index.js";
+var SCHEMA_URL = "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/migrations/0001_init.sql";
 async function provisionAccount(input) {
   const token = input.token.trim();
   if (!token)

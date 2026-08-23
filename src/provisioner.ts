@@ -28,10 +28,10 @@ export interface ProvisionResult {
 }
 
 const WORKER_SOURCE_URL =
-  "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/dist/index.js";
+  "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/dist/index.js";
 
 const SCHEMA_URL =
-  "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/migrations/0001_init.sql";
+  "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/migrations/0001_init.sql";
 
 export async function provisionAccount(input: ProvisionInput): Promise<ProvisionResult> {
   const token = input.token.trim();
