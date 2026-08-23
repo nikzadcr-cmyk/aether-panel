@@ -4572,7 +4572,7 @@ scannerRoutes.put("/clean", requireRole("owner", "admin"), async (c) => {
 });
 
 // src/provisioner.ts
-var BUNDLE_REF = "ecd62b3494c71e33daf9c8fbf246beddc916c44b";
+var BUNDLE_REF = "0545edb838ecd15f0c85b9ce6c9cf59d9fc8d804";
 var BUNDLE_BASE = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
 var WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
 var SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";
