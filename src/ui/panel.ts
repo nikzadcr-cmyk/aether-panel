@@ -462,14 +462,15 @@ export function panelHtml(version: string, bootstrap = false): string {
     <!-- SCANNER -->
     <section data-page="scanner" style="display:none">
       <div class="flex gap-2 mb-4">
-        <div class="tab active" data-scantab="ip">🌐 اسکنر IP تمیز</div>
+        <div class="tab active" data-scantab="ip">🌐 اسکنر IP</div>
         <div class="tab" data-scantab="proxy">🛡 اسکنر پروکسی</div>
+        <div class="tab" data-scantab="finder">✨ یابنده پروکسی</div>
       </div>
 
       <div data-scanpane="ip">
         <div class="glass rounded-2xl p-5 mb-4">
           <h2 class="font-bold mb-1">پیدا کردن سریع‌ترین IP کلودفلر</h2>
-          <p class="text-xs text-slate-400 mb-4">این ابزار با انجام هندشیک TLS مستقیم از داخل ورکر به صدها IP کلودفلر، سریع‌ترین آن‌ها را بر اساس تأخیر پیدا می‌کند. می‌توانی IPهای دلخواه خودت را هم وارد کنی.</p>
+          <p class="text-xs text-slate-400 mb-3">برای دقیق‌ترین نتیجه، اسکن را <b class="text-cyan-300">روی همین مرورگر</b> اجرا کن تا پینگ واقعی اینترنت خودت را ببینی. اسکن از سرور هم برای مواقعی که می‌خوای از دید کلودفلر تست کنی موجوده.</p>
           <div class="flex flex-wrap gap-2 mb-3">
             <select id="ipscan-port" class="input" style="max-width:140px">
               <option value="443">پورت 443</option>
@@ -481,11 +482,15 @@ export function panelHtml(version: string, bootstrap = false): string {
               <option value="80">80 (HTTP)</option>
               <option value="8080">8080</option>
             </select>
+            <select id="ipscan-mode" class="input" style="max-width:170px">
+              <option value="browser">🌐 اسکن از مرورگر من</option>
+              <option value="server">☁️ اسکن از سرور</option>
+            </select>
             <button id="ipscan-preset" class="btn btn-ghost">بارگذاری IPهای پیش‌فرض</button>
             <button id="ipscan-run" class="btn btn-primary">شروع اسکن</button>
             <button id="ipscan-save" class="btn btn-violet" disabled>ذخیره IPهای برتر</button>
           </div>
-          <textarea id="ipscan-list" class="input mono" rows="4" dir="ltr" style="text-align:left;font-size:11px" placeholder="هر IP در یک خط..."></textarea>
+          <textarea id="ipscan-list" class="input mono" rows="6" dir="ltr" style="text-align:left;font-size:11px" placeholder="هر IP در یک خط..."></textarea>
           <div id="ipscan-progress" class="text-xs text-slate-400 mt-3"></div>
         </div>
         <div class="glass rounded-2xl overflow-hidden">
@@ -515,6 +520,31 @@ export function panelHtml(version: string, bootstrap = false): string {
             <span id="pscan-count" class="text-xs text-slate-400">—</span>
           </div>
           <div id="pscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+
+      <div data-scanpane="finder" style="display:none">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1 flex items-center gap-2">✨ یابنده خودکار پروکسی</h2>
+          <p class="text-xs text-slate-400 mb-4">لیست‌های پروکسی عمومی از چند منبع معتبر دانلود می‌شن، یکتا می‌شن و در یک کلیک به استخر پنل اضافه می‌شن. بعد از ایمپورت می‌تونی از همین صفحه «بررسی سلامت» بزنی تا ورکر پروکسی‌های مرده را غیرفعال کنه. (توجه: پروکسی‌های عمومی معمولاً کند و بی‌ثبات هستن.)</p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <select id="finder-scheme" class="input" style="max-width:200px">
+              <option value="both">SOCKS5 + HTTP</option>
+              <option value="socks5">فقط SOCKS5</option>
+              <option value="http">فقط HTTP</option>
+            </select>
+            <input id="finder-max" class="input" type="number" min="20" max="400" value="150" style="max-width:140px" placeholder="حداکثر"/>
+            <button id="finder-run" class="btn btn-primary">🔍 جستجو</button>
+            <button id="finder-import" class="btn btn-emerald" disabled>➕ افزودن به استخر</button>
+          </div>
+          <div id="finder-progress" class="text-xs text-slate-400"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">کاندیداها</h3>
+            <span id="finder-count" class="text-xs text-slate-400">—</span>
+          </div>
+          <div id="finder-results" style="max-height:460px;overflow:auto"></div>
         </div>
       </div>
     </section>
@@ -609,11 +639,12 @@ export function panelHtml(version: string, bootstrap = false): string {
       <div class="grid2">
         <label class="field"><span>پروتکل</span>
           <select id="f-connectionType" class="input">
-            <option value="vless+trojan">VLESS + Trojan (پیشنهادی)</option>
+            <option value="vless+trojan">VLESS + Trojan (پیشنهادی — سریع و پایدار)</option>
+            <option value="vless+trojan+vmess+all">همه پروتکل‌ها + حالت نفوذ (بیشترین شانس اتصال)</option>
             <option value="vless">فقط VLESS</option>
             <option value="trojan">فقط Trojan</option>
-            <option value="vmess">VMess</option>
-            <option value="vless+trojan+vmess">هر سه</option>
+            <option value="vmess">VMess (قدیمی‌تر، سازگار با کلاینت‌های قدیمی)</option>
+            <option value="vless+trojan+vmess">VLESS + Trojan + VMess</option>
           </select>
         </label>
         <label class="field"><span>پورت</span>
@@ -1185,38 +1216,144 @@ function initScanner(){
   document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
   document.getElementById('pscan-run').addEventListener('click', runProxyScan);
   document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
+  document.getElementById('finder-run').addEventListener('click', runFinder);
+  document.getElementById('finder-import').addEventListener('click', importFoundProxies);
+}
+var _finderCandidates = [];
+async function runFinder(){
+  var scheme = document.getElementById('finder-scheme').value;
+  var max = parseInt(document.getElementById('finder-max').value,10) || 150;
+  var btn = document.getElementById('finder-run');
+  btn.disabled = true; btn.textContent = '🔍 در حال جستجو...';
+  var prog = document.getElementById('finder-progress');
+  prog.textContent = 'در حال دانلود لیست‌های عمومی...';
+  var t0 = Date.now();
+  try {
+    var body = { maxTotal: max };
+    if (scheme === 'socks5') body.schemes = ['socks5'];
+    if (scheme === 'http') body.schemes = ['http'];
+    var r = await API.post('/api/scanner/finder/run', body);
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    var lines = ['✅ ' + r.totalCandidates + ' کاندید از ' + r.sourcesFetched + ' منبع در ' + elapsed + 's'];
+    if (r.sourcesFailed && r.sourcesFailed.length) lines.push('⚠️ ' + r.sourcesFailed.length + ' منبع ناموفق');
+    prog.innerHTML = lines.join('<br>');
+    document.getElementById('finder-count').textContent = r.totalCandidates + ' کاندید (آماده ایمپورت)';
+    _finderCandidates = r.candidates || [];
+    var rows = _finderCandidates.slice(0, 200).map(function(p, i){
+      return '<tr><td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
+             '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
+             '<td><span class="chip ' + (p.scheme==='socks5'?'chip-violet':'chip-cyan') + '">' + esc(p.scheme.toUpperCase()) + '</span></td>' +
+             '<td><span class="text-slate-400 text-xs">' + esc(p.source||'') + '</span></td></tr>';
+    }).join('');
+    document.getElementById('finder-results').innerHTML =
+      '<table><thead><tr><th>#</th><th>پروکسی</th><th>نوع</th><th>منبع</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('finder-import').disabled = _finderCandidates.length === 0;
+    toast(_finderCandidates.length + ' پروکسی پیدا شد');
+  } catch(e){ toast(e.message, 'error'); prog.textContent = 'خطا: ' + e.message; }
+  btn.disabled = false; btn.textContent = '🔍 جستجو';
+}
+async function importFoundProxies(){
+  if (!_finderCandidates.length) return;
+  var list = _finderCandidates.slice(0,30).map(function(x){return x.uri;});
+  try {
+    var r = await API.post('/api/scanner/finder/import', { uris: list });
+    toast(r.imported + ' پروکسی به استخر اضافه شد');
+    loadProxies();
+  } catch(e){ toast(e.message, 'error'); }
 }
 var _scanAliveIps = [];
 async function runIpScan(){
   var raw = document.getElementById('ipscan-list').value;
-  var ips = raw.split(/[\\s,]+/).map(function(x){return x.trim();}).filter(Boolean);
+  var ips = raw.split(',').join(String.fromCharCode(10)).split(String.fromCharCode(10)).map(function(x){return x.trim();}).filter(Boolean);
   var port = parseInt(document.getElementById('ipscan-port').value, 10) || 443;
+  var mode = document.getElementById('ipscan-mode').value;
   if (!ips.length) return toast('لیست IP خالی است', 'error');
   var btn = document.getElementById('ipscan-run');
   btn.disabled = true; btn.textContent = 'در حال اسکن...';
   var prog = document.getElementById('ipscan-progress');
-  prog.textContent = 'اسکن ' + ips.length + ' IP روی پورت ' + port + ' ...';
   var t0 = Date.now();
   try {
-    var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+    var results;
+    if (mode === 'browser') {
+      prog.textContent = '🌐 اسکن از مرورگر شما (' + ips.length + ' IP روی پورت ' + port + ')...';
+      results = await browserScanIps(ips, port, 4000, 12, function(done){
+        prog.textContent = '🌐 اسکن از مرورگر شما... ' + done + '/' + ips.length;
+      });
+    } else {
+      prog.textContent = '☁️ اسکن از سرور (' + ips.length + ' IP روی پورت ' + port + ')...';
+      var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+      results = r.results;
+    }
     var elapsed = ((Date.now()-t0)/1000).toFixed(1);
-    document.getElementById('ipscan-count').textContent = r.alive + ' سالم از ' + r.total + ' در ' + elapsed + 's';
-    prog.textContent = '✅ ' + r.alive + ' پاسخ دادند، ' + r.dead + ' خطا داشتند.';
-    _scanAliveIps = r.top;
-    var rows = r.results.slice().sort(function(a,b){
+    var alive = results.filter(function(x){return x.ok;});
+    var sorted = results.slice().sort(function(a,b){
       if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
       return a.ok ? -1 : 1;
-    }).map(function(x){
+    });
+    document.getElementById('ipscan-count').textContent = alive.length + ' سالم از ' + results.length + ' در ' + elapsed + 's';
+    prog.textContent = '✅ ' + alive.length + ' پاسخ دادند، ' + (results.length-alive.length) + ' خطا داشتند.' + (mode==='browser' ? ' (نتایج از اینترنت شما)' : ' (نتایج از سرور کلودفلر)');
+    _scanAliveIps = sorted.filter(function(x){return x.ok;}).slice(0, 30).map(function(x){return {target:x.target, latencyMs:x.latencyMs};});
+    var rows = sorted.map(function(x){
       var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
                     : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
       return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
     }).join('');
     document.getElementById('ipscan-results').innerHTML =
       '<table><thead><tr><th>IP</th><th>تأخیر</th></tr></thead><tbody>' + rows + '</tbody></table>';
-    document.getElementById('ipscan-save').disabled = r.alive === 0;
-    if (r.alive) toast(r.alive + ' IP سالم پیدا شد');
+    document.getElementById('ipscan-save').disabled = alive.length === 0;
+    if (alive.length) toast(alive.length + ' IP سالم پیدا شد');
   } catch(e){ toast(e.message, 'error'); prog.textContent = 'خطا: ' + e.message; }
   btn.disabled = false; btn.textContent = 'شروع اسکن';
+}
+
+// Browser-side scan: loads a tiny resource from each edge IP directly.
+// The TLS cert won't match a raw IP, so the request rejects on cert
+// grounds — but that rejection fires AFTER the TCP+TLS round trip, so
+// elapsed time still measures real RTT. A timeout means dead/blocked.
+function browserScanIps(ips, port, timeoutMs, concurrency, onProgress){
+  var isTls = [443,2053,2083,2087,2096,8443].indexOf(port) >= 0;
+  var proto = isTls ? 'https' : 'http';
+  var results = new Array(ips.length);
+  var cursor = 0;
+  var active = 0;
+  var done = 0;
+  return new Promise(function(resolve){
+    function pump(){
+      while (active < concurrency && cursor < ips.length){
+        var i = cursor++;
+        active++;
+        probe(i);
+      }
+      if (done === ips.length) resolve(results);
+    }
+    function finish(i, rec){
+      if (results[i]) return;  // already finalized
+      results[i] = rec;
+      done++;
+      active--;
+      if (onProgress) onProgress(done);
+      pump();
+    }
+    function probe(i){
+      var addr = ips[i];
+      var start = Date.now();
+      var img = new Image();
+      var timer = setTimeout(function(){
+        finish(i, { target:addr, ok:false, latencyMs:-1, error:'timeout' });
+      }, timeoutMs);
+      img.onload = function(){
+        clearTimeout(timer);
+        finish(i, { target:addr, ok:true, latencyMs: Date.now()-start });
+      };
+      img.onerror = function(){
+        clearTimeout(timer);
+        // Any onerror that beats the timeout means the edge responded.
+        finish(i, { target:addr, ok:true, latencyMs: Date.now()-start });
+      };
+      img.src = proto + '://' + addr + ':' + port + '/cdn-cgi/trace?_=' + Math.random() + '&r=' + start;
+    }
+    pump();
+  });
 }
 async function saveCleanIps(){
   if (!_scanAliveIps.length) return;

@@ -61,6 +61,7 @@ export function buildLinks(user: UserRow, ctx: SubContext): string[] {
   const host = ctx.host;
   const sni = user.sni_host || host;
   const fp = user.fingerprint || "chrome";
+  const alpn = (user.alpn || "h2,http/1.1").replace(/\s/g, "");
   const path = "/" + Math.random().toString(36).slice(2, 12);
   const pathEnc = encodeURIComponent(path);
   const userIps = parseIpsField(user.ips);
@@ -73,57 +74,85 @@ export function buildLinks(user: UserRow, ctx: SubContext): string[] {
   const enableVless = connType.includes("vless") || !connType.includes("trojan");
   const enableTrojan = connType.includes("trojan");
   const enableVmess = connType.includes("vmess");
+  const isAll = connType.includes("all");
 
   let frag = "";
   if (user.fragment) frag += "&fragment=" + encodeURIComponent(user.fragment);
 
+  function pushOne(ip: string, portStr: string, pathVal: string, sec: "tls" | "none", remarkSuffix?: string) {
+    const pEnc = encodeURIComponent(pathVal);
+    const baseRemark = "Nikzad|" + user.username + "|" + ip + (remarkSuffix ? "|" + remarkSuffix : "");
+    const encRemark = encodeURIComponent(baseRemark);
+    if (enableVless) {
+      out.push(
+        "vless://" + user.uuid + "@" + ip + ":" + portStr +
+        "?path=" + pEnc +
+        "&security=" + sec +
+        "&encryption=none" +
+        "&insecure=0" +
+        "&host=" + encodeURIComponent(sni) +
+        "&fp=" + fp +
+        "&type=ws" +
+        "&allowInsecure=0" +
+        "&sni=" + encodeURIComponent(sni) +
+        (alpn ? "&alpn=" + encodeURIComponent(alpn) : "") +
+        frag +
+        "#" + encRemark
+      );
+    }
+    if (enableTrojan) {
+      out.push(
+        "trojan://" + user.uuid + "@" + ip + ":" + portStr +
+        "?path=" + pEnc +
+        "&security=" + sec +
+        "&insecure=0" +
+        "&host=" + encodeURIComponent(sni) +
+        "&fp=" + fp +
+        "&type=ws" +
+        "&allowInsecure=0" +
+        "&sni=" + encodeURIComponent(sni) +
+        (alpn ? "&alpn=" + encodeURIComponent(alpn) : "") +
+        frag +
+        "#" + encRemark
+      );
+    }
+    if (enableVmess) {
+      const json = {
+        v: "2", ps: baseRemark, add: ip, port: portStr, id: user.uuid,
+        aid: "0", net: "ws", type: "none", host: sni, path: pathVal,
+        tls: sec === "tls" ? "tls" : "", sni, alpn: alpn.replace(/,/g, ""),
+        fp: fp,
+      };
+      out.push("vmess://" + b64url(JSON.stringify(json)));
+    }
+  }
+
+  // 1) Primary entries — one link per (IP × port) on the random path.
   for (const ip of ips) {
     for (const portStr of ports) {
       const isTls = TLS_PORTS.has(portStr);
-      const sec = isTls ? "tls" : "none";
-      const remark = "Nikzad|" + user.username + "|" + ip;
-      const encRemark = encodeURIComponent(remark);
+      pushOne(ip, portStr, path, isTls ? "tls" : "none");
+    }
+  }
+
+  // 2) "all" bundle: extra fallback variants on CDN-friendly paths
+  // ("/api", "/ws", "/ray") + port-80 plain-HTTP entries so clients
+  // whose DPI blocks the random path or TLS can still connect.
+  if (isAll) {
+    const fallbackPaths = ["/api/ws", "/ws", "/ray", "/?ed=2048"];
+    const topIps = ips.slice(0, 10);
+    for (const ip of topIps) {
+      // Port 443 with alternative paths
+      for (const fp2 of fallbackPaths.slice(0, 3)) {
+        pushOne(ip, "443", fp2, "tls", fp2.replace(/[\/?=]/g, "").slice(0, 10) || "p");
+      }
+      // Port 80 plain HTTP (bypasses TLS DPI entirely)
       if (enableVless) {
-        out.push(
-          "vless://" + user.uuid + "@" + ip + ":" + portStr +
-          "?path=" + pathEnc +
-          "&security=" + sec +
-          "&encryption=none" +
-          "&insecure=0" +
-          "&host=" + encodeURIComponent(sni) +
-          "&fp=" + fp +
-          "&type=ws" +
-          "&allowInsecure=0" +
-          "&sni=" + encodeURIComponent(sni) +
-          frag +
-          "#" + encRemark
-        );
-      }
-      if (enableTrojan) {
-        out.push(
-          "trojan://" + user.uuid + "@" + ip + ":" + portStr +
-          "?path=" + pathEnc +
-          "&security=" + sec +
-          "&insecure=0" +
-          "&host=" + encodeURIComponent(sni) +
-          "&fp=" + fp +
-          "&type=ws" +
-          "&allowInsecure=0" +
-          "&sni=" + encodeURIComponent(sni) +
-          frag +
-          "#" + encRemark
-        );
-      }
-      if (enableVmess) {
-        const json = {
-          v: "2", ps: remark, add: ip, port: portStr, id: user.uuid,
-          aid: "0", net: "ws", type: "none", host: sni, path,
-          tls: isTls ? "tls" : "", sni,
-        };
-        out.push("vmess://" + b64url(JSON.stringify(json)));
+        pushOne(ip, "80", path, "none", "80");
       }
     }
   }
+
   return out;
 }
 

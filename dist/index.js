@@ -4402,6 +4402,80 @@ async function scanProxies(opts) {
   return out;
 }
 
+// src/services/proxyFinder.ts
+var SOURCES = [
+  { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", scheme: "socks5", label: "TheSpeedX/socks5" },
+  { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", scheme: "socks5", label: "TheSpeedX/socks4" },
+  { url: "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", scheme: "http", label: "TheSpeedX/http" },
+  { url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", scheme: "socks5", label: "monosans/socks5" },
+  { url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", scheme: "socks5", label: "monosans/socks4" },
+  { url: "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", scheme: "http", label: "monosans/http" },
+  { url: "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", scheme: "socks5", label: "hookzof" },
+  { url: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt", scheme: "socks5", label: "ShiftyTR/socks5" },
+  { url: "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt", scheme: "http", label: "ShiftyTR/http" }
+];
+async function findProxies(opts = {}) {
+  const maxPerSource = Math.min(200, opts.maxPerSource ?? 80);
+  const maxTotal = Math.min(400, opts.maxTotal ?? 250);
+  const schemes = new Set(opts.schemes || ["socks5", "http"]);
+  const sourcesFailed = [];
+  const seen = /* @__PURE__ */ new Map();
+  let sourcesFetched = 0;
+  const fetched = await Promise.all(
+    SOURCES.filter((s) => schemes.has(s.scheme)).map(async (src) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8e3);
+        const r = await fetch(src.url, { signal: ctrl.signal, headers: { "user-agent": "Nikzad-Finder/1.0" } });
+        clearTimeout(t);
+        if (!r.ok)
+          throw new Error("HTTP " + r.status);
+        const text = await r.text();
+        return { src, text };
+      } catch (e) {
+        sourcesFailed.push({ label: src.label, error: e.message });
+        return null;
+      }
+    })
+  );
+  for (const f of fetched) {
+    if (!f)
+      continue;
+    sourcesFetched++;
+    const lines = f.text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let count = 0;
+    for (const line of lines) {
+      if (count >= maxPerSource)
+        break;
+      const raw2 = line.includes("://") ? line : f.src.scheme + "://" + line;
+      const parsed = parseProxyUri(raw2);
+      if (!parsed)
+        continue;
+      const key = parsed.host + ":" + parsed.port + "|" + parsed.type;
+      if (seen.has(key))
+        continue;
+      seen.set(key, { uri: canonicalUri(parsed), source: f.src.label, scheme: parsed.type });
+      count++;
+      if (seen.size >= maxTotal)
+        break;
+    }
+    if (seen.size >= maxTotal)
+      break;
+  }
+  const candidates = Array.from(seen.values());
+  return {
+    ok: true,
+    sourcesFetched,
+    sourcesFailed,
+    totalCandidates: candidates.length,
+    candidates
+  };
+}
+function canonicalUri(p) {
+  const auth = p.user ? p.user + ":" + (p.pass || "") + "@" : "";
+  return p.type + "://" + auth + p.host + ":" + p.port;
+}
+
 // src/services/cleanIps.ts
 var DEFAULT_CLEAN_IPS = [
   "104.21.25.236",
@@ -4569,6 +4643,34 @@ scannerRoutes.put("/clean", requireRole("owner", "admin"), async (c) => {
     "INSERT INTO settings (key, value, updated_at) VALUES ('clean_ips', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   ).bind(JSON.stringify(ips), nowSec()).run();
   return c.json({ ok: true, count: ips.length });
+});
+scannerRoutes.post("/finder/run", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const result = await findProxies({
+    schemes: body.schemes,
+    maxPerSource: body.maxPerSource,
+    maxTotal: body.maxTotal
+  });
+  return c.json(result);
+});
+scannerRoutes.post("/finder/import", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  let uris = [];
+  if (Array.isArray(body.uris) && body.uris.length) {
+    uris = body.uris.slice(0, 50);
+  } else {
+    const r = await findProxies({ schemes: body.schemes, maxTotal: body.max || 100 });
+    uris = r.candidates.slice(0, 30).map((c2) => c2.uri);
+  }
+  if (!uris.length)
+    return c.json({ ok: true, imported: 0 });
+  const stmts = uris.map(
+    (uri) => c.env.DB.prepare(
+      "INSERT OR IGNORE INTO proxies (uri, country, source, is_active, last_checked, created_at) VALUES (?, ?, ?, 1, 0, ?)"
+    ).bind(uri, "AUTO", "finder", nowSec())
+  );
+  await c.env.DB.batch(stmts);
+  return c.json({ ok: true, imported: uris.length });
 });
 
 // src/provisioner.ts
@@ -5960,14 +6062,15 @@ function panelHtml(version, bootstrap = false) {
     <!-- SCANNER -->
     <section data-page="scanner" style="display:none">
       <div class="flex gap-2 mb-4">
-        <div class="tab active" data-scantab="ip">\u{1F310} \u0627\u0633\u06A9\u0646\u0631 IP \u062A\u0645\u06CC\u0632</div>
+        <div class="tab active" data-scantab="ip">\u{1F310} \u0627\u0633\u06A9\u0646\u0631 IP</div>
         <div class="tab" data-scantab="proxy">\u{1F6E1} \u0627\u0633\u06A9\u0646\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
+        <div class="tab" data-scantab="finder">\u2728 \u06CC\u0627\u0628\u0646\u062F\u0647 \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
       </div>
 
       <div data-scanpane="ip">
         <div class="glass rounded-2xl p-5 mb-4">
           <h2 class="font-bold mb-1">\u067E\u06CC\u062F\u0627 \u06A9\u0631\u062F\u0646 \u0633\u0631\u06CC\u0639\u200C\u062A\u0631\u06CC\u0646 IP \u06A9\u0644\u0648\u062F\u0641\u0644\u0631</h2>
-          <p class="text-xs text-slate-400 mb-4">\u0627\u06CC\u0646 \u0627\u0628\u0632\u0627\u0631 \u0628\u0627 \u0627\u0646\u062C\u0627\u0645 \u0647\u0646\u062F\u0634\u06CC\u06A9 TLS \u0645\u0633\u062A\u0642\u06CC\u0645 \u0627\u0632 \u062F\u0627\u062E\u0644 \u0648\u0631\u06A9\u0631 \u0628\u0647 \u0635\u062F\u0647\u0627 IP \u06A9\u0644\u0648\u062F\u0641\u0644\u0631\u060C \u0633\u0631\u06CC\u0639\u200C\u062A\u0631\u06CC\u0646 \u0622\u0646\u200C\u0647\u0627 \u0631\u0627 \u0628\u0631 \u0627\u0633\u0627\u0633 \u062A\u0623\u062E\u06CC\u0631 \u067E\u06CC\u062F\u0627 \u0645\u06CC\u200C\u06A9\u0646\u062F. \u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC IP\u0647\u0627\u06CC \u062F\u0644\u062E\u0648\u0627\u0647 \u062E\u0648\u062F\u062A \u0631\u0627 \u0647\u0645 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC.</p>
+          <p class="text-xs text-slate-400 mb-3">\u0628\u0631\u0627\u06CC \u062F\u0642\u06CC\u0642\u200C\u062A\u0631\u06CC\u0646 \u0646\u062A\u06CC\u062C\u0647\u060C \u0627\u0633\u06A9\u0646 \u0631\u0627 <b class="text-cyan-300">\u0631\u0648\u06CC \u0647\u0645\u06CC\u0646 \u0645\u0631\u0648\u0631\u06AF\u0631</b> \u0627\u062C\u0631\u0627 \u06A9\u0646 \u062A\u0627 \u067E\u06CC\u0646\u06AF \u0648\u0627\u0642\u0639\u06CC \u0627\u06CC\u0646\u062A\u0631\u0646\u062A \u062E\u0648\u062F\u062A \u0631\u0627 \u0628\u0628\u06CC\u0646\u06CC. \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0633\u0631\u0648\u0631 \u0647\u0645 \u0628\u0631\u0627\u06CC \u0645\u0648\u0627\u0642\u0639\u06CC \u06A9\u0647 \u0645\u06CC\u200C\u062E\u0648\u0627\u06CC \u0627\u0632 \u062F\u06CC\u062F \u06A9\u0644\u0648\u062F\u0641\u0644\u0631 \u062A\u0633\u062A \u06A9\u0646\u06CC \u0645\u0648\u062C\u0648\u062F\u0647.</p>
           <div class="flex flex-wrap gap-2 mb-3">
             <select id="ipscan-port" class="input" style="max-width:140px">
               <option value="443">\u067E\u0648\u0631\u062A 443</option>
@@ -5979,11 +6082,15 @@ function panelHtml(version, bootstrap = false) {
               <option value="80">80 (HTTP)</option>
               <option value="8080">8080</option>
             </select>
+            <select id="ipscan-mode" class="input" style="max-width:170px">
+              <option value="browser">\u{1F310} \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631 \u0645\u0646</option>
+              <option value="server">\u2601\uFE0F \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0633\u0631\u0648\u0631</option>
+            </select>
             <button id="ipscan-preset" class="btn btn-ghost">\u0628\u0627\u0631\u06AF\u0630\u0627\u0631\u06CC IP\u0647\u0627\u06CC \u067E\u06CC\u0634\u200C\u0641\u0631\u0636</button>
             <button id="ipscan-run" class="btn btn-primary">\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646</button>
             <button id="ipscan-save" class="btn btn-violet" disabled>\u0630\u062E\u06CC\u0631\u0647 IP\u0647\u0627\u06CC \u0628\u0631\u062A\u0631</button>
           </div>
-          <textarea id="ipscan-list" class="input mono" rows="4" dir="ltr" style="text-align:left;font-size:11px" placeholder="\u0647\u0631 IP \u062F\u0631 \u06CC\u06A9 \u062E\u0637..."></textarea>
+          <textarea id="ipscan-list" class="input mono" rows="6" dir="ltr" style="text-align:left;font-size:11px" placeholder="\u0647\u0631 IP \u062F\u0631 \u06CC\u06A9 \u062E\u0637..."></textarea>
           <div id="ipscan-progress" class="text-xs text-slate-400 mt-3"></div>
         </div>
         <div class="glass rounded-2xl overflow-hidden">
@@ -6013,6 +6120,31 @@ function panelHtml(version, bootstrap = false) {
             <span id="pscan-count" class="text-xs text-slate-400">\u2014</span>
           </div>
           <div id="pscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+
+      <div data-scanpane="finder" style="display:none">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1 flex items-center gap-2">\u2728 \u06CC\u0627\u0628\u0646\u062F\u0647 \u062E\u0648\u062F\u06A9\u0627\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC</h2>
+          <p class="text-xs text-slate-400 mb-4">\u0644\u06CC\u0633\u062A\u200C\u0647\u0627\u06CC \u067E\u0631\u0648\u06A9\u0633\u06CC \u0639\u0645\u0648\u0645\u06CC \u0627\u0632 \u0686\u0646\u062F \u0645\u0646\u0628\u0639 \u0645\u0639\u062A\u0628\u0631 \u062F\u0627\u0646\u0644\u0648\u062F \u0645\u06CC\u200C\u0634\u0646\u060C \u06CC\u06A9\u062A\u0627 \u0645\u06CC\u200C\u0634\u0646 \u0648 \u062F\u0631 \u06CC\u06A9 \u06A9\u0644\u06CC\u06A9 \u0628\u0647 \u0627\u0633\u062A\u062E\u0631 \u067E\u0646\u0644 \u0627\u0636\u0627\u0641\u0647 \u0645\u06CC\u200C\u0634\u0646. \u0628\u0639\u062F \u0627\u0632 \u0627\u06CC\u0645\u067E\u0648\u0631\u062A \u0645\u06CC\u200C\u062A\u0648\u0646\u06CC \u0627\u0632 \u0647\u0645\u06CC\u0646 \u0635\u0641\u062D\u0647 \xAB\u0628\u0631\u0631\u0633\u06CC \u0633\u0644\u0627\u0645\u062A\xBB \u0628\u0632\u0646\u06CC \u062A\u0627 \u0648\u0631\u06A9\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627\u06CC \u0645\u0631\u062F\u0647 \u0631\u0627 \u063A\u06CC\u0631\u0641\u0639\u0627\u0644 \u06A9\u0646\u0647. (\u062A\u0648\u062C\u0647: \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627\u06CC \u0639\u0645\u0648\u0645\u06CC \u0645\u0639\u0645\u0648\u0644\u0627\u064B \u06A9\u0646\u062F \u0648 \u0628\u06CC\u200C\u062B\u0628\u0627\u062A \u0647\u0633\u062A\u0646.)</p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <select id="finder-scheme" class="input" style="max-width:200px">
+              <option value="both">SOCKS5 + HTTP</option>
+              <option value="socks5">\u0641\u0642\u0637 SOCKS5</option>
+              <option value="http">\u0641\u0642\u0637 HTTP</option>
+            </select>
+            <input id="finder-max" class="input" type="number" min="20" max="400" value="150" style="max-width:140px" placeholder="\u062D\u062F\u0627\u06A9\u062B\u0631"/>
+            <button id="finder-run" class="btn btn-primary">\u{1F50D} \u062C\u0633\u062A\u062C\u0648</button>
+            <button id="finder-import" class="btn btn-emerald" disabled>\u2795 \u0627\u0641\u0632\u0648\u062F\u0646 \u0628\u0647 \u0627\u0633\u062A\u062E\u0631</button>
+          </div>
+          <div id="finder-progress" class="text-xs text-slate-400"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">\u06A9\u0627\u0646\u062F\u06CC\u062F\u0627\u0647\u0627</h3>
+            <span id="finder-count" class="text-xs text-slate-400">\u2014</span>
+          </div>
+          <div id="finder-results" style="max-height:460px;overflow:auto"></div>
         </div>
       </div>
     </section>
@@ -6107,11 +6239,12 @@ function panelHtml(version, bootstrap = false) {
       <div class="grid2">
         <label class="field"><span>\u067E\u0631\u0648\u062A\u06A9\u0644</span>
           <select id="f-connectionType" class="input">
-            <option value="vless+trojan">VLESS + Trojan (\u067E\u06CC\u0634\u0646\u0647\u0627\u062F\u06CC)</option>
+            <option value="vless+trojan">VLESS + Trojan (\u067E\u06CC\u0634\u0646\u0647\u0627\u062F\u06CC \u2014 \u0633\u0631\u06CC\u0639 \u0648 \u067E\u0627\u06CC\u062F\u0627\u0631)</option>
+            <option value="vless+trojan+vmess+all">\u0647\u0645\u0647 \u067E\u0631\u0648\u062A\u06A9\u0644\u200C\u0647\u0627 + \u062D\u0627\u0644\u062A \u0646\u0641\u0648\u0630 (\u0628\u06CC\u0634\u062A\u0631\u06CC\u0646 \u0634\u0627\u0646\u0633 \u0627\u062A\u0635\u0627\u0644)</option>
             <option value="vless">\u0641\u0642\u0637 VLESS</option>
             <option value="trojan">\u0641\u0642\u0637 Trojan</option>
-            <option value="vmess">VMess</option>
-            <option value="vless+trojan+vmess">\u0647\u0631 \u0633\u0647</option>
+            <option value="vmess">VMess (\u0642\u062F\u06CC\u0645\u06CC\u200C\u062A\u0631\u060C \u0633\u0627\u0632\u06AF\u0627\u0631 \u0628\u0627 \u06A9\u0644\u0627\u06CC\u0646\u062A\u200C\u0647\u0627\u06CC \u0642\u062F\u06CC\u0645\u06CC)</option>
+            <option value="vless+trojan+vmess">VLESS + Trojan + VMess</option>
           </select>
         </label>
         <label class="field"><span>\u067E\u0648\u0631\u062A</span>
@@ -6683,38 +6816,144 @@ function initScanner(){
   document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
   document.getElementById('pscan-run').addEventListener('click', runProxyScan);
   document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
+  document.getElementById('finder-run').addEventListener('click', runFinder);
+  document.getElementById('finder-import').addEventListener('click', importFoundProxies);
+}
+var _finderCandidates = [];
+async function runFinder(){
+  var scheme = document.getElementById('finder-scheme').value;
+  var max = parseInt(document.getElementById('finder-max').value,10) || 150;
+  var btn = document.getElementById('finder-run');
+  btn.disabled = true; btn.textContent = '\u{1F50D} \u062F\u0631 \u062D\u0627\u0644 \u062C\u0633\u062A\u062C\u0648...';
+  var prog = document.getElementById('finder-progress');
+  prog.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u062F\u0627\u0646\u0644\u0648\u062F \u0644\u06CC\u0633\u062A\u200C\u0647\u0627\u06CC \u0639\u0645\u0648\u0645\u06CC...';
+  var t0 = Date.now();
+  try {
+    var body = { maxTotal: max };
+    if (scheme === 'socks5') body.schemes = ['socks5'];
+    if (scheme === 'http') body.schemes = ['http'];
+    var r = await API.post('/api/scanner/finder/run', body);
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    var lines = ['\u2705 ' + r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F \u0627\u0632 ' + r.sourcesFetched + ' \u0645\u0646\u0628\u0639 \u062F\u0631 ' + elapsed + 's'];
+    if (r.sourcesFailed && r.sourcesFailed.length) lines.push('\u26A0\uFE0F ' + r.sourcesFailed.length + ' \u0645\u0646\u0628\u0639 \u0646\u0627\u0645\u0648\u0641\u0642');
+    prog.innerHTML = lines.join('<br>');
+    document.getElementById('finder-count').textContent = r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F (\u0622\u0645\u0627\u062F\u0647 \u0627\u06CC\u0645\u067E\u0648\u0631\u062A)';
+    _finderCandidates = r.candidates || [];
+    var rows = _finderCandidates.slice(0, 200).map(function(p, i){
+      return '<tr><td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
+             '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
+             '<td><span class="chip ' + (p.scheme==='socks5'?'chip-violet':'chip-cyan') + '">' + esc(p.scheme.toUpperCase()) + '</span></td>' +
+             '<td><span class="text-slate-400 text-xs">' + esc(p.source||'') + '</span></td></tr>';
+    }).join('');
+    document.getElementById('finder-results').innerHTML =
+      '<table><thead><tr><th>#</th><th>\u067E\u0631\u0648\u06A9\u0633\u06CC</th><th>\u0646\u0648\u0639</th><th>\u0645\u0646\u0628\u0639</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('finder-import').disabled = _finderCandidates.length === 0;
+    toast(_finderCandidates.length + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u067E\u06CC\u062F\u0627 \u0634\u062F');
+  } catch(e){ toast(e.message, 'error'); prog.textContent = '\u062E\u0637\u0627: ' + e.message; }
+  btn.disabled = false; btn.textContent = '\u{1F50D} \u062C\u0633\u062A\u062C\u0648';
+}
+async function importFoundProxies(){
+  if (!_finderCandidates.length) return;
+  var list = _finderCandidates.slice(0,30).map(function(x){return x.uri;});
+  try {
+    var r = await API.post('/api/scanner/finder/import', { uris: list });
+    toast(r.imported + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u0628\u0647 \u0627\u0633\u062A\u062E\u0631 \u0627\u0636\u0627\u0641\u0647 \u0634\u062F');
+    loadProxies();
+  } catch(e){ toast(e.message, 'error'); }
 }
 var _scanAliveIps = [];
 async function runIpScan(){
   var raw = document.getElementById('ipscan-list').value;
-  var ips = raw.split(/[\\s,]+/).map(function(x){return x.trim();}).filter(Boolean);
+  var ips = raw.split(',').join(String.fromCharCode(10)).split(String.fromCharCode(10)).map(function(x){return x.trim();}).filter(Boolean);
   var port = parseInt(document.getElementById('ipscan-port').value, 10) || 443;
+  var mode = document.getElementById('ipscan-mode').value;
   if (!ips.length) return toast('\u0644\u06CC\u0633\u062A IP \u062E\u0627\u0644\u06CC \u0627\u0633\u062A', 'error');
   var btn = document.getElementById('ipscan-run');
   btn.disabled = true; btn.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u0627\u0633\u06A9\u0646...';
   var prog = document.getElementById('ipscan-progress');
-  prog.textContent = '\u0627\u0633\u06A9\u0646 ' + ips.length + ' IP \u0631\u0648\u06CC \u067E\u0648\u0631\u062A ' + port + ' ...';
   var t0 = Date.now();
   try {
-    var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+    var results;
+    if (mode === 'browser') {
+      prog.textContent = '\u{1F310} \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631 \u0634\u0645\u0627 (' + ips.length + ' IP \u0631\u0648\u06CC \u067E\u0648\u0631\u062A ' + port + ')...';
+      results = await browserScanIps(ips, port, 4000, 12, function(done){
+        prog.textContent = '\u{1F310} \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631 \u0634\u0645\u0627... ' + done + '/' + ips.length;
+      });
+    } else {
+      prog.textContent = '\u2601\uFE0F \u0627\u0633\u06A9\u0646 \u0627\u0632 \u0633\u0631\u0648\u0631 (' + ips.length + ' IP \u0631\u0648\u06CC \u067E\u0648\u0631\u062A ' + port + ')...';
+      var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+      results = r.results;
+    }
     var elapsed = ((Date.now()-t0)/1000).toFixed(1);
-    document.getElementById('ipscan-count').textContent = r.alive + ' \u0633\u0627\u0644\u0645 \u0627\u0632 ' + r.total + ' \u062F\u0631 ' + elapsed + 's';
-    prog.textContent = '\u2705 ' + r.alive + ' \u067E\u0627\u0633\u062E \u062F\u0627\u062F\u0646\u062F\u060C ' + r.dead + ' \u062E\u0637\u0627 \u062F\u0627\u0634\u062A\u0646\u062F.';
-    _scanAliveIps = r.top;
-    var rows = r.results.slice().sort(function(a,b){
+    var alive = results.filter(function(x){return x.ok;});
+    var sorted = results.slice().sort(function(a,b){
       if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
       return a.ok ? -1 : 1;
-    }).map(function(x){
+    });
+    document.getElementById('ipscan-count').textContent = alive.length + ' \u0633\u0627\u0644\u0645 \u0627\u0632 ' + results.length + ' \u062F\u0631 ' + elapsed + 's';
+    prog.textContent = '\u2705 ' + alive.length + ' \u067E\u0627\u0633\u062E \u062F\u0627\u062F\u0646\u062F\u060C ' + (results.length-alive.length) + ' \u062E\u0637\u0627 \u062F\u0627\u0634\u062A\u0646\u062F.' + (mode==='browser' ? ' (\u0646\u062A\u0627\u06CC\u062C \u0627\u0632 \u0627\u06CC\u0646\u062A\u0631\u0646\u062A \u0634\u0645\u0627)' : ' (\u0646\u062A\u0627\u06CC\u062C \u0627\u0632 \u0633\u0631\u0648\u0631 \u06A9\u0644\u0648\u062F\u0641\u0644\u0631)');
+    _scanAliveIps = sorted.filter(function(x){return x.ok;}).slice(0, 30).map(function(x){return {target:x.target, latencyMs:x.latencyMs};});
+    var rows = sorted.map(function(x){
       var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
                     : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
       return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
     }).join('');
     document.getElementById('ipscan-results').innerHTML =
       '<table><thead><tr><th>IP</th><th>\u062A\u0623\u062E\u06CC\u0631</th></tr></thead><tbody>' + rows + '</tbody></table>';
-    document.getElementById('ipscan-save').disabled = r.alive === 0;
-    if (r.alive) toast(r.alive + ' IP \u0633\u0627\u0644\u0645 \u067E\u06CC\u062F\u0627 \u0634\u062F');
+    document.getElementById('ipscan-save').disabled = alive.length === 0;
+    if (alive.length) toast(alive.length + ' IP \u0633\u0627\u0644\u0645 \u067E\u06CC\u062F\u0627 \u0634\u062F');
   } catch(e){ toast(e.message, 'error'); prog.textContent = '\u062E\u0637\u0627: ' + e.message; }
   btn.disabled = false; btn.textContent = '\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646';
+}
+
+// Browser-side scan: loads a tiny resource from each edge IP directly.
+// The TLS cert won't match a raw IP, so the request rejects on cert
+// grounds \u2014 but that rejection fires AFTER the TCP+TLS round trip, so
+// elapsed time still measures real RTT. A timeout means dead/blocked.
+function browserScanIps(ips, port, timeoutMs, concurrency, onProgress){
+  var isTls = [443,2053,2083,2087,2096,8443].indexOf(port) >= 0;
+  var proto = isTls ? 'https' : 'http';
+  var results = new Array(ips.length);
+  var cursor = 0;
+  var active = 0;
+  var done = 0;
+  return new Promise(function(resolve){
+    function pump(){
+      while (active < concurrency && cursor < ips.length){
+        var i = cursor++;
+        active++;
+        probe(i);
+      }
+      if (done === ips.length) resolve(results);
+    }
+    function finish(i, rec){
+      if (results[i]) return;  // already finalized
+      results[i] = rec;
+      done++;
+      active--;
+      if (onProgress) onProgress(done);
+      pump();
+    }
+    function probe(i){
+      var addr = ips[i];
+      var start = Date.now();
+      var img = new Image();
+      var timer = setTimeout(function(){
+        finish(i, { target:addr, ok:false, latencyMs:-1, error:'timeout' });
+      }, timeoutMs);
+      img.onload = function(){
+        clearTimeout(timer);
+        finish(i, { target:addr, ok:true, latencyMs: Date.now()-start });
+      };
+      img.onerror = function(){
+        clearTimeout(timer);
+        // Any onerror that beats the timeout means the edge responded.
+        finish(i, { target:addr, ok:true, latencyMs: Date.now()-start });
+      };
+      img.src = proto + '://' + addr + ':' + port + '/cdn-cgi/trace?_=' + Math.random() + '&r=' + start;
+    }
+    pump();
+  });
 }
 async function saveCleanIps(){
   if (!_scanAliveIps.length) return;
@@ -6849,6 +7088,7 @@ function buildLinks(user, ctx) {
   const host = ctx.host;
   const sni = user.sni_host || host;
   const fp = user.fingerprint || "chrome";
+  const alpn = (user.alpn || "h2,http/1.1").replace(/\s/g, "");
   const path = "/" + Math.random().toString(36).slice(2, 12);
   const pathEnc = encodeURIComponent(path);
   const userIps = parseIpsField(user.ips);
@@ -6859,41 +7099,59 @@ function buildLinks(user, ctx) {
   const enableVless = connType.includes("vless") || !connType.includes("trojan");
   const enableTrojan = connType.includes("trojan");
   const enableVmess = connType.includes("vmess");
+  const isAll = connType.includes("all");
   let frag = "";
   if (user.fragment)
     frag += "&fragment=" + encodeURIComponent(user.fragment);
+  function pushOne(ip, portStr, pathVal, sec, remarkSuffix) {
+    const pEnc = encodeURIComponent(pathVal);
+    const baseRemark = "Nikzad|" + user.username + "|" + ip + (remarkSuffix ? "|" + remarkSuffix : "");
+    const encRemark = encodeURIComponent(baseRemark);
+    if (enableVless) {
+      out.push(
+        "vless://" + user.uuid + "@" + ip + ":" + portStr + "?path=" + pEnc + "&security=" + sec + "&encryption=none&insecure=0&host=" + encodeURIComponent(sni) + "&fp=" + fp + "&type=ws&allowInsecure=0&sni=" + encodeURIComponent(sni) + (alpn ? "&alpn=" + encodeURIComponent(alpn) : "") + frag + "#" + encRemark
+      );
+    }
+    if (enableTrojan) {
+      out.push(
+        "trojan://" + user.uuid + "@" + ip + ":" + portStr + "?path=" + pEnc + "&security=" + sec + "&insecure=0&host=" + encodeURIComponent(sni) + "&fp=" + fp + "&type=ws&allowInsecure=0&sni=" + encodeURIComponent(sni) + (alpn ? "&alpn=" + encodeURIComponent(alpn) : "") + frag + "#" + encRemark
+      );
+    }
+    if (enableVmess) {
+      const json = {
+        v: "2",
+        ps: baseRemark,
+        add: ip,
+        port: portStr,
+        id: user.uuid,
+        aid: "0",
+        net: "ws",
+        type: "none",
+        host: sni,
+        path: pathVal,
+        tls: sec === "tls" ? "tls" : "",
+        sni,
+        alpn: alpn.replace(/,/g, ""),
+        fp
+      };
+      out.push("vmess://" + b64url(JSON.stringify(json)));
+    }
+  }
   for (const ip of ips) {
     for (const portStr of ports) {
       const isTls = TLS_PORTS2.has(portStr);
-      const sec = isTls ? "tls" : "none";
-      const remark = "Nikzad|" + user.username + "|" + ip;
-      const encRemark = encodeURIComponent(remark);
+      pushOne(ip, portStr, path, isTls ? "tls" : "none");
+    }
+  }
+  if (isAll) {
+    const fallbackPaths = ["/api/ws", "/ws", "/ray", "/?ed=2048"];
+    const topIps = ips.slice(0, 10);
+    for (const ip of topIps) {
+      for (const fp2 of fallbackPaths.slice(0, 3)) {
+        pushOne(ip, "443", fp2, "tls", fp2.replace(/[\/?=]/g, "").slice(0, 10) || "p");
+      }
       if (enableVless) {
-        out.push(
-          "vless://" + user.uuid + "@" + ip + ":" + portStr + "?path=" + pathEnc + "&security=" + sec + "&encryption=none&insecure=0&host=" + encodeURIComponent(sni) + "&fp=" + fp + "&type=ws&allowInsecure=0&sni=" + encodeURIComponent(sni) + frag + "#" + encRemark
-        );
-      }
-      if (enableTrojan) {
-        out.push(
-          "trojan://" + user.uuid + "@" + ip + ":" + portStr + "?path=" + pathEnc + "&security=" + sec + "&insecure=0&host=" + encodeURIComponent(sni) + "&fp=" + fp + "&type=ws&allowInsecure=0&sni=" + encodeURIComponent(sni) + frag + "#" + encRemark
-        );
-      }
-      if (enableVmess) {
-        const json = {
-          v: "2",
-          ps: remark,
-          add: ip,
-          port: portStr,
-          id: user.uuid,
-          aid: "0",
-          net: "ws",
-          type: "none",
-          host: sni,
-          path,
-          tls: isTls ? "tls" : "",
-          sni
-        };
-        out.push("vmess://" + b64url(JSON.stringify(json)));
+        pushOne(ip, "80", path, "none", "80");
       }
     }
   }

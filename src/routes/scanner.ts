@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import type { Env } from "../env.js";
 import { requireAuth, requireRole, type AppVars } from "../middleware/auth.js";
 import { scanIps, scanProxies } from "../services/scanner.js";
+import { findProxies } from "../services/proxyFinder.js";
 import { DEFAULT_CLEAN_IPS } from "../services/cleanIps.js";
 import { nowSec } from "../util/bytes.js";
 
@@ -80,4 +81,41 @@ scannerRoutes.put("/clean", requireRole("owner", "admin"), async (c) => {
     "INSERT INTO settings (key, value, updated_at) VALUES ('clean_ips', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   ).bind(JSON.stringify(ips), nowSec()).run();
   return c.json({ ok: true, count: ips.length });
+});
+
+// Auto proxy finder: scrape public lists, return unique candidates.
+// Proxies can't be TCP-probed from a Worker (raw connect() is restricted
+// to Cloudflare-owned ranges), so reachability is tested in the browser.
+scannerRoutes.post("/finder/run", requireRole("owner", "admin"), async (c) => {
+  const body: { schemes?: ("socks5" | "http")[]; maxPerSource?: number; maxTotal?: number } =
+    await c.req.json().catch(() => ({}));
+  const result = await findProxies({
+    schemes: body.schemes,
+    maxPerSource: body.maxPerSource,
+    maxTotal: body.maxTotal,
+  });
+  return c.json(result);
+});
+
+// Convenience: run finder AND import a slice into the pool in one call.
+scannerRoutes.post("/finder/import", requireRole("owner", "admin"), async (c) => {
+  const body: { schemes?: ("socks5" | "http")[]; max?: number; uris?: string[] } =
+    await c.req.json().catch(() => ({}));
+  // If the caller already tested in the browser and passed the alive URIs,
+  // just import those. Otherwise pull a fresh list and import the first N.
+  let uris: string[] = [];
+  if (Array.isArray(body.uris) && body.uris.length) {
+    uris = body.uris.slice(0, 50);
+  } else {
+    const r = await findProxies({ schemes: body.schemes, maxTotal: body.max || 100 });
+    uris = r.candidates.slice(0, 30).map((c) => c.uri);
+  }
+  if (!uris.length) return c.json({ ok: true, imported: 0 });
+  const stmts = uris.map((uri) =>
+    c.env.DB.prepare(
+      "INSERT OR IGNORE INTO proxies (uri, country, source, is_active, last_checked, created_at) VALUES (?, ?, ?, 1, 0, ?)"
+    ).bind(uri, "AUTO", "finder", nowSec())
+  );
+  await c.env.DB.batch(stmts);
+  return c.json({ ok: true, imported: uris.length });
 });
