@@ -162,34 +162,30 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. Wait for auto-bootstrap + login. We just deployed the worker, and
-  // D1 binding can take a few seconds to propagate. The /auto-bootstrap
-  // endpoint itself retries internally for ~6s; we poll both endpoints
-  // here. Cap at ~20s (10 iters × 2s) to stay inside Telegram's 60s window.
+  // 10b. Wait for tables then insert admin directly via /api/auth/setup
+  // (which accepts username+password in the body and only succeeds if no
+  // admins exist yet). The /auto-bootstrap approach relies on a secret
+  // binding that may not be ready immediately after deploy.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
+  const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 12; i++) {
     try {
-      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", {
+      // Try setup (harmless if already initialized; returns 400 then).
+      await fetch(panelBase + "/api/auth/setup", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        body: setupBody,
+      }).catch(() => {});
+      const lr = await fetch(panelBase + "/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: loginBody,
       });
-      const abText = await ab.text().catch(() => "");
-      if (ab.ok) {
-        const lr = await fetch(panelBase + "/api/auth/login", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: adminLogin,
-        });
-        if (lr.ok) { loginOk = true; console.log("bootstrap ok after", i, "iters"); break; }
-        const lrText = await lr.text().catch(() => "");
-        if (i % 4 === 0) console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0,80), "lr=", lr.status, lrText.slice(0,80));
-      } else if (i % 4 === 0) {
-        console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0, 100));
-      }
-    } catch (e) {
-      if (i % 4 === 0) console.warn("bootstrap poll", i, "err:", (e as Error).message);
+      if (lr.ok) { loginOk = true; break; }
+    } catch {
+      /* retry */
     }
     await new Promise((res) => setTimeout(res, 2000));
   }
