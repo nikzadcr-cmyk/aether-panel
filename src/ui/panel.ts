@@ -121,7 +121,14 @@ export function panelHtml(version: string, bootstrap = false): string {
   .brand small { display:block; font-size:9.5px; color:var(--muted); font-family:ui-monospace,monospace; margin-top:-2px; }
   .topnav { display:flex; gap:4px; margin:0 8px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; }
   .topnav::-webkit-scrollbar { display:none; }
-  .nav-item { display:inline-flex; align-items:center; gap:7px; padding:8px 12px; border-radius:10px; color:#94a3b8; cursor:pointer; transition:.15s; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; }
+  .nav-item { display:inline-flex; align-items:center; gap:7px; padding:8px 12px; border-radius:10px; color:#94a3b8; cursor:pointer; transition:.15s; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; min-width:0; }
+  /* On narrower desktop widths, show only icons in the top nav so the
+     settings tab never disappears under the action buttons. */
+  @media (max-width: 1100px) {
+    .topnav .nav-item { padding:8px 10px; gap:0; font-size:0; }
+    .topnav .nav-item svg { width:18px; height:18px; }
+    .topnav .nav-item.active { font-size:12px; gap:6px; }
+  }
   .nav-item svg { width:16px; height:16px; }
   .nav-item:hover { background:rgba(34,211,238,.06); color:#e5e7eb; }
   .nav-item.active { background:linear-gradient(135deg,rgba(34,211,238,.18),rgba(14,165,233,.08)); color:#67e8f9; box-shadow:inset 0 0 0 1px rgba(34,211,238,.25); }
@@ -143,9 +150,10 @@ export function panelHtml(version: string, bootstrap = false): string {
     .brand b { font-size:14px; }
     .brand small { font-size:8.5px; }
     .brand img { width:30px; height:30px; }
-    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(5,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
-    .bottomnav .nav-item { flex-direction:column; gap:2px; padding:7px 4px; font-size:10px; border-radius:12px; justify-content:center; }
-    .bottomnav .nav-item svg { width:19px; height:19px; }
+    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:2px; padding:6px; background:rgba(8,10,18,.94); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
+    .bottomnav .nav-item { flex-direction:column; gap:3px; padding:7px 2px; font-size:10px; border-radius:12px; justify-content:center; min-width:0; overflow:hidden; }
+    .bottomnav .nav-item span, .bottomnav .nav-item { white-space:nowrap; }
+    .bottomnav .nav-item svg { width:19px; height:19px; flex-shrink:0; }
     main.app-main { padding:14px 12px 96px !important; }
     .users-table-desktop { display:none !important; }
     .users-grid-mobile { display:grid !important; grid-template-columns:1fr; gap:10px; }

@@ -94,6 +94,11 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   const adminUser = "admin";
 
   // 7. multipart upload of worker with metadata
+  // IMPORTANT: workers.dev subdomain must exist BEFORE the script upload,
+  // otherwise Cloudflare rejects the PUT with "you need a workers.dev
+  // subdomain". We ensure the account subdomain first.
+  const subdomain = await ensureAccountSubdomain(api, headers, accountId, token);
+
   const metadata = {
     main_module: "index.js",
     compatibility_date: "2025-01-15",
@@ -150,20 +155,13 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
     throw new Error("آپلود ورکر ناموفق: " + (upJson.errors?.[0]?.message || "unknown"));
   }
 
-  // 8. enable workers.dev route for this script
+  // 8. enable workers.dev route for this script (subdomain already
+  // created above before upload).
   await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
     method: "POST",
     headers,
     body: JSON.stringify({ enabled: true }),
   }).catch(() => {});
-
-  // 9. fetch (never overwrite) account-level workers.dev subdomain
-  let subdomain = accountId.slice(0, 12);
-  try {
-    const sd = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", { headers });
-    const sdj = (await sd.json()) as { success: boolean; result?: { subdomain?: string } };
-    if (sdj.success && sdj.result?.subdomain) subdomain = sdj.result.subdomain;
-  } catch { /* use default */ }
 
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
@@ -366,6 +364,65 @@ export async function updateWorkerDeployment(input: {
 }
 
 /* ---------------- helpers ---------------- */
+
+/**
+ * Make sure the account has a workers.dev subdomain. New Cloudflare
+ * accounts don't have one until the user opens the Workers dashboard
+ * for the first time, but the API can register one directly with a
+ * PUT /accounts/:id/workers/subdomain call. We generate a readable,
+ * unique-enough subdomain from the account name + suffix when the
+ * account has none yet.
+ */
+async function ensureAccountSubdomain(
+  api: string,
+  headers: Record<string, string>,
+  accountId: string,
+  token: string
+): Promise<string> {
+  // First try to read the existing subdomain.
+  try {
+    const sd = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", { headers });
+    const sdj = (await sd.json()) as { success: boolean; result?: { subdomain?: string } };
+    if (sdj.success && sdj.result?.subdomain) return sdj.result.subdomain;
+  } catch { /* fall through to create */ }
+
+  // Build a candidate subdomain: account name slugified + 4 random
+  // chars, e.g. "nikzadpanel-x7k2". Must be lowercase, start with a
+  // letter, and use only [a-z0-9-].
+  const candidate = "nikzad-" + randomSuffix(6);
+  const r = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", {
+    method: "PUT",
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ subdomain: candidate }),
+  });
+  const j = (await r.json()) as {
+    success: boolean;
+    result?: { subdomain?: string };
+    errors?: { code: number; message: string }[];
+  };
+  if (j.success && j.result?.subdomain) return j.result.subdomain;
+  // If taken (10020 or similar) fall through to a second attempt with
+  // a different suffix.
+  const fallback = "nikzad-" + randomSuffix(8);
+  const r2 = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", {
+    method: "PUT",
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ subdomain: fallback }),
+  });
+  const j2 = (await r2.json()) as { success: boolean; result?: { subdomain?: string }; errors?: { message: string }[] };
+  if (j2.success && j2.result?.subdomain) return j2.result.subdomain;
+  // Couldn't create — return a deterministic default so the caller
+  // still has something to put in the URL; the deploy will likely
+  // fail with a clearer message from Cloudflare at that point.
+  console.warn("could not create workers.dev subdomain:", j2.errors?.[0]?.message);
+  return accountId.slice(0, 12);
+}
 
 async function ensureD1(api: string, headers: Record<string, string>, accountId: string, name = "aether"): Promise<string> {
   const list = await fetch(api + "/accounts/" + accountId + "/d1/database?name=" + encodeURIComponent(name), { headers });
