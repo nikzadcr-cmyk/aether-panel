@@ -196,6 +196,94 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   };
 }
 
+/**
+ * Re-deploy (update) an existing Aether worker on a user's account,
+ * preserving its D1/KV bindings and secrets. Used by the Telegram bot
+ * "🔄 آپدیت پنل" action.
+ */
+export async function updateWorkerDeployment(input: {
+  token: string;
+  workerName: string;
+  accountId?: string;
+}): Promise<{ ok: true; workerName: string; url: string }> {
+  const token = input.token.trim();
+  if (!token) throw new Error("توکن خالی است");
+  const api = "https://api.cloudflare.com/client/v4";
+  const headers: Record<string, string> = {
+    Authorization: "Bearer " + token,
+    "Content-Type": "application/json",
+  };
+
+  let accountId = input.accountId;
+  if (!accountId) {
+    const accRes = await fetch(api + "/accounts", { headers });
+    const aj = (await accRes.json()) as { success: boolean; result?: Array<{ id: string }>; errors?: { message: string }[] };
+    if (!aj.success || !aj.result?.length) throw new Error("حساب پیدا نشد: " + (aj.errors?.[0]?.message || ""));
+    accountId = aj.result[0]!.id;
+  }
+  const workerName = input.workerName;
+
+  const d1 = await ensureD1(api, headers, accountId);
+  const kv = await ensureKv(api, headers, accountId);
+  await ensureQueue(api, headers, accountId);
+
+  const srcRes = await fetch(WORKER_SOURCE_URL);
+  if (!srcRes.ok) throw new Error("دریافت سورس جدید ناموفق بود");
+  const workerJs = await srcRes.text();
+
+  const metadata = {
+    main_module: "worker.js",
+    compatibility_date: "2025-01-15",
+    compatibility_flags: ["nodejs_compat"],
+    bindings: [
+      { type: "d1", name: "DB", id: d1 },
+      { type: "kv_namespace", name: "KV", namespace_id: kv },
+      { type: "queue", name: "WRITE_QUEUE", queue_name: "aether-writes" },
+      { type: "durable_object_namespace", name: "USER_STATE", class_name: "UserState", script_name: workerName },
+      { type: "durable_object_namespace", name: "POOL_STATE", class_name: "PoolState", script_name: workerName },
+      { type: "durable_object_namespace", name: "RATE_LIMIT", class_name: "RateLimiter", script_name: workerName },
+    ],
+    // keep PANEL_SECRET / ADMIN_BOOTSTRAP_PASSWORD and any plain vars
+    keep_bindings: [
+      { type: "secret_text", name: "PANEL_SECRET" },
+      { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD" },
+      { type: "plain_text", name: "APP_NAME" },
+      { type: "plain_text", name: "APP_VERSION" },
+      { type: "plain_text", name: "PRIMARY_FETCH" },
+      { type: "plain_text", name: "DEFAULT_DOH" },
+      { type: "plain_text", name: "PROXY_FALLBACK_HOSTS" },
+    ],
+    migrations: [{ tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] }],
+    observability: { enabled: true },
+  };
+
+  const form = new FormData();
+  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+  form.set("worker.js", new Blob([workerJs], { type: "application/javascript+module" }));
+  const up = await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName, {
+    method: "PUT",
+    headers: { Authorization: "Bearer " + token },
+    body: form,
+  });
+  const uj = (await up.json()) as { success: boolean; errors?: { message: string }[] };
+  if (!uj.success) throw new Error("آپلود سورس جدید ناموفق: " + (uj.errors?.[0]?.message || ""));
+
+  // re-register queue consumer + cron (idempotent)
+  await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ queue_name: "aether-writes", settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 } }),
+  }).catch(() => {});
+  await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ schedules: [{ cron: "* * * * *" }, { cron: "*/5 * * * *" }, { cron: "0 * * * *" }] }),
+  }).catch(() => {});
+
+  const url = "https://" + workerName + "." + accountId.slice(0, 12) + ".workers.dev";
+  return { ok: true, workerName, url };
+}
+
 /* ---------------- helpers ---------------- */
 
 async function ensureD1(api: string, headers: Record<string, string>, accountId: string): Promise<string> {

@@ -113,10 +113,32 @@ export function panelHtml(version: string, bootstrap = false): string {
     #000;
   }
   .glass { background:rgba(10,12,20,.72); backdrop-filter:blur(20px); border:1px solid var(--border); }
-  .sidebar { background:linear-gradient(180deg,rgba(10,12,20,.95),rgba(5,7,14,.95)); border-left:1px solid var(--border); }
-  .nav-item { display:flex; align-items:center; gap:12px; padding:11px 14px; border-radius:12px; color:#94a3b8; cursor:pointer; transition:.15s; font-size:14px; font-weight:500; }
+  .app-topbar { position:sticky; top:0; z-index:40; background:rgba(5,7,14,.82); backdrop-filter:blur(18px); border-bottom:1px solid var(--border); }
+  .app-topbar .inner { max-width:1100px; margin:0 auto; padding:12px 16px; display:flex; align-items:center; gap:12px; }
+  .brand { display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; flex-shrink:0; }
+  .brand img { width:34px; height:34px; }
+  .brand b { font-size:15px; letter-spacing:.5px; background:linear-gradient(135deg,#67e8f9,#0ea5e9); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .brand small { display:block; font-size:9.5px; color:var(--muted); font-family:ui-monospace,monospace; margin-top:-2px; }
+  .topnav { display:flex; gap:4px; margin:0 8px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; }
+  .topnav::-webkit-scrollbar { display:none; }
+  .nav-item { display:inline-flex; align-items:center; gap:7px; padding:8px 12px; border-radius:10px; color:#94a3b8; cursor:pointer; transition:.15s; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; }
+  .nav-item svg { width:16px; height:16px; }
   .nav-item:hover { background:rgba(34,211,238,.06); color:#e5e7eb; }
   .nav-item.active { background:linear-gradient(135deg,rgba(34,211,238,.18),rgba(14,165,233,.08)); color:#67e8f9; box-shadow:inset 0 0 0 1px rgba(34,211,238,.25); }
+  .top-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  .me-chip { display:flex; align-items:center; gap:8px; background:rgba(148,163,184,.06); border:1px solid var(--border); border-radius:999px; padding:4px 10px 4px 4px; }
+  .me-chip .avatar { width:28px; height:28px; border-radius:999px; display:grid; place-items:center; font-weight:700; font-size:12px; color:#00131c; }
+  .me-chip .name { font-size:12px; font-weight:600; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* mobile bottom nav */
+  .bottomnav { display:none; }
+  @media (max-width:768px) {
+    .topnav { display:none; }
+    .me-chip .name { display:none; }
+    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
+    .bottomnav .nav-item { flex-direction:column; gap:2px; padding:7px 4px; font-size:10px; border-radius:12px; justify-content:center; }
+    .bottomnav .nav-item svg { width:19px; height:19px; }
+    main.app-main { padding:14px 12px 96px !important; }
+  }
   .stat-card { position:relative; overflow:hidden; border-radius:18px; padding:18px; border:1px solid var(--border); background:linear-gradient(135deg,var(--panel),var(--panel-2)); transition:.2s; }
   .stat-card:hover { transform:translateY(-2px); border-color:var(--border-strong); }
   .stat-card .ic { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; }
@@ -191,11 +213,7 @@ export function panelHtml(version: string, bootstrap = false): string {
   .section-title { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin:18px 0 10px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width: 768px) {
-    .sidebar { position: fixed; right: 0; top: 0; bottom: 0; z-index: 60; transform: translateX(100%); transition: transform .25s ease; width: 260px; }
-    .sidebar.open { transform: translateX(0); }
-    .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 55; display: none; }
-    .sidebar-overlay.open { display: block; }
-    main { padding: 14px !important; }
+    main.app-main { padding: 14px 12px 96px !important; }
     .stat-card { padding: 14px; border-radius: 14px; }
     .stat-card .val { font-size: 20px; }
     .stat-card .ic { width: 36px; height: 36px; }
@@ -257,70 +275,52 @@ export function panelHtml(version: string, bootstrap = false): string {
 </div>
 
 <!-- ===== APP SHELL ===== -->
-<div id="app" class="flex min-h-screen" style="display:none">
-  <div id="sidebar-overlay" class="sidebar-overlay"></div>
-  <!-- Sidebar -->
-  <aside id="sidebar" class="sidebar w-64 flex-shrink-0 p-4 flex flex-col" style="position:sticky;top:0;height:100vh">
-    <div class="flex items-center gap-3 px-2 py-3 mb-6">
-      <img src="/icon.svg" class="w-10 h-10" alt=""/>
-      <div>
-        <div class="font-black text-lg leading-tight bg-gradient-to-l from-cyan-300 to-sky-500 bg-clip-text text-transparent">AETHER</div>
-        <div class="text-[10px] text-slate-500 font-mono">v${version}</div>
-      </div>
-    </div>
-    <nav class="space-y-1 flex-1">
-      <div class="nav-item active" data-view="dashboard">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
-        داشبورد
-      </div>
-      <div class="nav-item" data-view="users">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        کاربران
-      </div>
-      <div class="nav-item" data-view="proxies">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        استخر پروکسی
-      </div>
-      <div class="nav-item" data-view="settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        تنظیمات
-      </div>
-    </nav>
-    <div class="glass rounded-xl p-3 mt-auto">
-      <div class="flex items-center gap-2.5">
-        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 grid place-items-center text-slate-900 font-bold text-sm" id="me-avatar">A</div>
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-semibold truncate" id="me-name">—</div>
-          <div class="text-[10px] text-slate-400" id="me-role">—</div>
+<div id="app" style="display:none;min-height:100vh">
+  <header class="app-topbar">
+    <div class="inner">
+      <a class="brand" href="/panel">
+        <img src="/icon.svg" alt=""/>
+        <span><b>AETHER PANEL</b><small>v${version}</small></span>
+      </a>
+      <nav class="topnav">
+        <div class="nav-item active" data-view="dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+          داشبورد
         </div>
-        <button id="btn-logout" class="btn btn-icon btn-ghost" title="خروج">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <div class="nav-item" data-view="users">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          کاربران
+        </div>
+        <div class="nav-item" data-view="proxies">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          استخر پروکسی
+        </div>
+        <div class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          تنظیمات
+        </div>
+      </nav>
+      <div class="top-actions">
+        <div class="search-box" style="width:200px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="search" class="input" placeholder="جستجو..." style="padding:8px 12px 8px 12px;font-size:12px"/>
+        </div>
+        <button id="btn-new" class="btn btn-primary" title="کاربر جدید">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="hidden sm:inline">کاربر جدید</span>
         </button>
+        <div class="me-chip" title="خروج">
+          <div class="avatar" id="me-avatar" style="background:linear-gradient(135deg,#22d3ee,#0ea5e9)">A</div>
+          <span class="name" id="me-name">—</span>
+          <button id="btn-logout" class="btn btn-icon btn-ghost" style="width:28px;height:28px" title="خروج">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
       </div>
     </div>
-  </aside>
+  </header>
 
-  <!-- Main -->
-  <main class="flex-1 p-5 md:p-8 max-w-full overflow-hidden">
-    <!-- Top bar -->
-    <header class="flex items-center gap-3 mb-7 flex-wrap">
-      <button class="btn btn-ghost btn-icon mobile-show" id="btn-mob-menu">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-      <div class="search-box flex-1 max-w-sm">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search" class="input" placeholder="جستجوی کاربر یا UUID..."/>
-      </div>
-      <div class="flex items-center gap-2 mr-auto">
-        <span class="hidden md:flex items-center gap-2 text-xs text-slate-400 glass rounded-xl px-3 py-2">
-          <span class="pulse-dot"></span> آنلاین
-        </span>
-        <button id="btn-new" class="btn btn-primary">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          کاربر جدید
-        </button>
-      </div>
-    </header>
+  <main class="app-main" style="max-width:1100px;margin:0 auto;padding:20px 16px 40px">
 
     <!-- DASHBOARD -->
     <section data-page="dashboard">
@@ -454,6 +454,25 @@ export function panelHtml(version: string, bootstrap = false): string {
       </div>
     </section>
   </main>
+
+  <nav class="bottomnav">
+    <div class="nav-item active" data-view="dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+      داشبورد
+    </div>
+    <div class="nav-item" data-view="users">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      کاربران
+    </div>
+    <div class="nav-item" data-view="proxies">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      پروکسی
+    </div>
+    <div class="nav-item" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      تنظیمات
+    </div>
+  </nav>
 </div>
 
 <!-- ===== User Modal ===== -->
@@ -649,17 +668,7 @@ function go(view){
 }
 document.querySelectorAll('.nav-item').forEach(function(n){ n.addEventListener('click', function(){
   go(n.dataset.view);
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('sidebar-overlay').classList.remove('open');
 }); });
-document.getElementById('btn-mob-menu')?.addEventListener('click', function(){
-  document.getElementById('sidebar').classList.toggle('open');
-  document.getElementById('sidebar-overlay').classList.toggle('open');
-});
-document.getElementById('sidebar-overlay')?.addEventListener('click', function(){
-  document.getElementById('sidebar').classList.remove('open');
-  this.classList.remove('open');
-});
 
 /* ---------- bootstrap / auth ---------- */
 async function boot(){
@@ -667,8 +676,11 @@ async function boot(){
     var me = await API.get('/api/auth/me');
     document.getElementById('app').style.display = '';
     document.getElementById('me-name').textContent = me.actor;
-    document.getElementById('me-role').textContent = me.role || me.kind;
+    var roleEl = document.getElementById('me-role');
+    if (roleEl) roleEl.textContent = me.role || me.kind;
     document.getElementById('me-avatar').textContent = String(me.actor||'A').charAt(0).toUpperCase();
+    var chip = document.querySelector('.me-chip');
+    if (chip) chip.title = me.actor + (me.role ? ' · ' + me.role : '');
     await loadDashboard();
   } catch(e){
     document.getElementById('bootstrap').style.display = '';
