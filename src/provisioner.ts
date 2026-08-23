@@ -163,18 +163,20 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10b. Bootstrap admin via the worker endpoint. The worker may answer
   // before D1 schema has finished propagating, in which case auto-bootstrap
   // returns ok:true but the row isn't actually written. We verify by logging
-  // in; if that fails, we keep calling auto-bootstrap for up to ~60s.
+  // in; if that fails, we keep calling auto-bootstrap for up to ~90s.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     try {
-      await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" }).catch(() => {});
-      const lr = await fetch(panelBase + "/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: adminLogin,
-      });
-      if (lr.ok) break;
+      const br = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
+      if (br.ok) {
+        const lr = await fetch(panelBase + "/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: adminLogin,
+        });
+        if (lr.ok) break;
+      }
     } catch {
       /* retry */
     }
