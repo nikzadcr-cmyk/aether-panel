@@ -131,14 +131,36 @@ export function panelHtml(version: string, bootstrap = false): string {
   .me-chip .name { font-size:12px; font-weight:600; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* mobile bottom nav */
   .bottomnav { display:none; }
+  .mobile-toolbar { display:none; }
   @media (max-width:768px) {
     .topnav { display:none; }
     .me-chip .name { display:none; }
+    .search-top { display:none !important; }
+    .mobile-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:14px; }
+    .mobile-toolbar .search-box { flex:1; min-width:0; }
+    .mobile-toolbar .search-box input { width:100%; padding:10px 14px 10px 36px; font-size:13px; }
+    .app-topbar .inner { padding:10px 12px; gap:8px; }
+    .brand b { font-size:14px; }
+    .brand small { font-size:8.5px; }
+    .brand img { width:30px; height:30px; }
     .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
     .bottomnav .nav-item { flex-direction:column; gap:2px; padding:7px 4px; font-size:10px; border-radius:12px; justify-content:center; }
     .bottomnav .nav-item svg { width:19px; height:19px; }
     main.app-main { padding:14px 12px 96px !important; }
+    .users-table-desktop { display:none !important; }
+    .users-grid-mobile { display:grid !important; grid-template-columns:1fr; gap:10px; }
+    .user-card { background:linear-gradient(135deg,var(--panel),var(--panel-2)); border:1px solid var(--border); border-radius:14px; padding:14px; }
+    .user-card .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .user-card .name { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; min-width:0; }
+    .user-card .uuid { font-size:10px; color:var(--muted); font-family:ui-monospace,monospace; }
+    .user-card .meta { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; font-size:11px; }
+    .user-card .meta > div { background:rgba(148,163,184,.05); border-radius:8px; padding:7px 9px; }
+    .user-card .meta .lbl { display:block; color:var(--muted); font-size:9.5px; margin-bottom:2px; }
+    .user-card .actions { display:flex; gap:6px; margin-top:10px; }
+    .user-card .actions .btn { flex:1; padding:8px 6px; font-size:11px; }
+    .user-card .progress { flex:1; min-width:0; }
   }
+  .users-grid-mobile { display:none; }
   .stat-card { position:relative; overflow:hidden; border-radius:18px; padding:18px; border:1px solid var(--border); background:linear-gradient(135deg,var(--panel),var(--panel-2)); transition:.2s; }
   .stat-card:hover { transform:translateY(-2px); border-color:var(--border-strong); }
   .stat-card .ic { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; }
@@ -301,7 +323,7 @@ export function panelHtml(version: string, bootstrap = false): string {
         </div>
       </nav>
       <div class="top-actions">
-        <div class="search-box" style="width:200px">
+        <div class="search-box search-top" style="width:200px">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input id="search" class="input" placeholder="جستجو..." style="padding:8px 12px 8px 12px;font-size:12px"/>
         </div>
@@ -321,6 +343,13 @@ export function panelHtml(version: string, bootstrap = false): string {
   </header>
 
   <main class="app-main" style="max-width:1100px;margin:0 auto;padding:20px 16px 40px">
+
+    <div class="mobile-toolbar">
+      <div class="search-box">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search-mobile" class="input" placeholder="جستجوی کاربر یا UUID..."/>
+      </div>
+    </div>
 
     <!-- DASHBOARD -->
     <section data-page="dashboard">
@@ -808,7 +837,35 @@ function renderUsersTable(users, compact){
       '<td><div class="flex gap-1">' + actions + '</div></td>' +
     '</tr>';
   }).join('');
-  return '<table>' + head + '<tbody>' + rows + '</tbody></table>';
+  var table = '<table class="users-table-desktop">' + head + '<tbody>' + rows + '</tbody></table>';
+  var cards = '<div class="users-grid-mobile">' + users.map(function(u){
+    var p = pct(u.used_gb, u.limit_gb);
+    var color = avatarColor(u.username);
+    var activeChip = u.is_active
+      ? '<span class="chip chip-green"><span class="pulse-dot" style="width:6px;height:6px"></span> فعال</span>'
+      : '<span class="chip chip-red">غیرفعال</span>';
+    var initial = esc(String(u.username).charAt(0).toUpperCase());
+    return '<div class="user-card">' +
+      '<div class="row">' +
+        '<div class="name"><span class="avatar" style="width:32px;height:32px;border-radius:10px;background:'+color+'22;color:'+color+';border:1px solid '+color+'44;display:grid;place-items:center;font-weight:700">'+initial+'</span>' +
+          '<div style="min-width:0"><div class="truncate">'+esc(u.username)+'</div><div class="uuid">'+esc((u.uuid||'').slice(0,13))+'…</div></div>' +
+        '</div>' +
+        activeChip +
+      '</div>' +
+      '<div class="meta">' +
+        '<div><span class="lbl">پروتکل</span>'+protoChips(u.connection_type)+'</div>' +
+        '<div><span class="lbl">حجم</span><div class="flex items-center gap-2" style="display:flex;align-items:center;gap:6px"><div class="progress '+progressClass(p)+'"><i style="width:'+p+'%"></i></div><span class="text-[10px] text-slate-400 whitespace-nowrap">'+fmtGB(u.used_gb).replace(' GB','')+'/'+(u.limit_gb==null?'∞':fmtGB(u.limit_gb).replace(' GB',''))+'</span></div></div>' +
+        '<div><span class="lbl">انقضا</span>'+(u.expiry_days != null ? u.expiry_days+' روز' : '<span class="text-slate-500">∞</span>')+'</div>' +
+        '<div><span class="lbl">آخرین اتصال</span><span class="text-[10px] text-slate-400">'+fmtDate(u.last_active)+'</span></div>' +
+      '</div>' +
+      '<div class="actions">' +
+        '<button class="btn btn-ghost" data-act="sub" data-u="'+esc(u.username)+'">📱 اشتراک</button>' +
+        '<button class="btn btn-ghost" data-act="edit" data-u="'+esc(u.username)+'">✏️ ویرایش</button>' +
+        '<button class="btn btn-ghost" style="color:#fb7185" data-act="del" data-u="'+esc(u.username)+'">حذف</button>' +
+      '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+  return table + cards;
 }
 
 function wireRows(){
@@ -857,6 +914,14 @@ document.querySelectorAll('[data-bulk]').forEach(function(b){
 document.getElementById('btn-new').addEventListener('click', function(){ openUserModal(null); });
 document.getElementById('btn-refresh').addEventListener('click', function(){ loadUsers(); loadStats(); toast('به‌روز شد'); });
 document.getElementById('search').addEventListener('input', debounce(loadUsers, 250));
+(function syncSearches(){
+  var a = document.getElementById('search');
+  var b = document.getElementById('search-mobile');
+  if (b) {
+    b.addEventListener('input', function(){ a.value = b.value; a.dispatchEvent(new Event('input')); });
+    a.addEventListener('input', function(){ if (b.value !== a.value) b.value = a.value; });
+  }
+})();
 function debounce(fn, ms){ var t; return function(){ clearTimeout(t); t = setTimeout(fn, ms); }; }
 
 /* ---------- user modal ---------- */

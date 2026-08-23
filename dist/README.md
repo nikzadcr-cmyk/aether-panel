@@ -1,1 +1,0 @@
-This folder contains the built output assets for the worker "aether-panel" generated at 2026-08-23T17:26:22.845Z.

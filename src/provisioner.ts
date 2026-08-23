@@ -60,13 +60,19 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   }
   const accountId = accJson.result[0]!.id;
   const workerName = (input.workerName || "aether-panel-" + randomSuffix(6)).toLowerCase();
+  // Unique per-deployment resource names so multiple panels on one account
+  // don't collide on shared D1/KV/Queue. Names are truncated to fit limits.
+  const suffix = workerName.replace(/[^a-z0-9]/g, "").slice(0, 24) || randomSuffix(6);
+  const d1Name = "aether-" + suffix;
+  const kvName = "aether-kv-" + suffix;
+  const queueName = "aether-q-" + suffix.slice(0, 20);
 
   // 2. D1
-  const d1 = await ensureD1(api, headers, accountId);
+  const d1 = await ensureD1(api, headers, accountId, d1Name);
   // 3. KV
-  const kv = await ensureKv(api, headers, accountId);
+  const kv = await ensureKv(api, headers, accountId, kvName);
   // 4. Queue
-  await ensureQueue(api, headers, accountId);
+  await ensureQueue(api, headers, accountId, queueName);
   // 5. fetch worker source
   const srcRes = await fetch(WORKER_SOURCE_URL);
   if (!srcRes.ok) throw new Error("دریافت سورس ورکر از گیت‌هاب ناموفق بود");
@@ -79,36 +85,28 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
 
   // 7. multipart upload of worker with metadata
   const metadata = {
-    main_module: "worker.js",
+    main_module: "index.js",
     compatibility_date: "2025-01-15",
     compatibility_flags: ["nodejs_compat"],
-    migrations: [
-      {
-        tag: "v1",
-        new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"],
-      },
-    ],
+    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
     bindings: [
       { type: "d1", name: "DB", id: d1 },
       { type: "kv_namespace", name: "KV", namespace_id: kv },
-      { type: "queue", name: "WRITE_QUEUE", queue_name: "aether-writes" },
+      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
       {
         type: "durable_object_namespace",
         name: "USER_STATE",
         class_name: "UserState",
-        script_name: workerName,
       },
       {
         type: "durable_object_namespace",
         name: "POOL_STATE",
         class_name: "PoolState",
-        script_name: workerName,
       },
       {
         type: "durable_object_namespace",
         name: "RATE_LIMIT",
         class_name: "RateLimiter",
-        script_name: workerName,
       },
       { type: "plain_text", name: "APP_NAME", text: "Aether Panel" },
       { type: "plain_text", name: "APP_VERSION", text: "0.1.0" },
@@ -130,8 +128,8 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   };
 
   const form = new FormData();
-  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  form.set("worker.js", new Blob([workerJs], { type: "application/javascript+module" }));
+  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
 
   const upload = await fetch(
     api + "/accounts/" + accountId + "/workers/scripts/" + workerName,
@@ -142,29 +140,44 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
     throw new Error("آپلود ورکر ناموفق: " + (upJson.errors?.[0]?.message || "unknown"));
   }
 
-  // 8. enable workers.dev subdomain for this worker (one-time per account)
+  // 8. enable workers.dev route for this script
   await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
     method: "POST",
     headers,
     body: JSON.stringify({ enabled: true }),
   }).catch(() => {});
 
-  // 9. make sure account-level workers.dev is on
-  await fetch(api + "/accounts/" + accountId + "/workers/subdomain", {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({ subdomain: accountId.slice(0, 12) }),
-  }).catch(() => {});
+  // 9. fetch (never overwrite) account-level workers.dev subdomain
+  let subdomain = accountId.slice(0, 12);
+  try {
+    const sd = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", { headers });
+    const sdj = (await sd.json()) as { success: boolean; result?: { subdomain?: string } };
+    if (sdj.success && sdj.result?.subdomain) subdomain = sdj.result.subdomain;
+  } catch { /* use default */ }
 
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
+
+  // 10b. hit the worker's auto-bootstrap endpoint so the admin user is
+  // created immediately using ADMIN_BOOTSTRAP_PASSWORD (retry a few times
+  // while the worker propagates).
+  const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
+  for (let i = 0; i < 8; i++) {
+    try {
+      const r = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
+      if (r.ok) break;
+    } catch {
+      /* retry */
+    }
+    await new Promise((res) => setTimeout(res, 1500));
+  }
 
   // 11. register queue consumer
   await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
     method: "POST",
     headers,
     body: JSON.stringify({
-      queue_name: "aether-writes",
+      queue_name: queueName,
       dead_letter_queue: undefined,
       settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 },
     }),
@@ -183,7 +196,7 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
     }),
   }).catch(() => {});
 
-  const url = "https://" + workerName + "." + accountId.slice(0, 12) + ".workers.dev";
+  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
   return {
     ok: true,
     workerName,
@@ -223,27 +236,46 @@ export async function updateWorkerDeployment(input: {
   }
   const workerName = input.workerName;
 
-  const d1 = await ensureD1(api, headers, accountId);
-  const kv = await ensureKv(api, headers, accountId);
-  await ensureQueue(api, headers, accountId);
+  // When updating we only need existing bindings to remain intact; the
+  // metadata.bindings we send here will be merged with keep_bindings by
+  // Cloudflare. Look up current worker config to reuse its D1/KV/queue IDs.
+  const cur = await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/settings", { headers });
+  const curJson = (await cur.json()) as {
+    success: boolean;
+    result?: { bindings?: Array<{ type: string; name: string; id?: string; namespace_id?: string; queue_name?: string }> };
+  };
+  const binds = (curJson.success ? curJson.result?.bindings || [] : []) as Array<{ type: string; name: string; id?: string; namespace_id?: string; queue_name?: string }>;
+  const d1Bind = binds.find((b) => b.type === "d1" && b.name === "DB");
+  const kvBind = binds.find((b) => b.type === "kv_namespace" && b.name === "KV");
+  const qBind = binds.find((b) => b.type === "queue" && b.name === "WRITE_QUEUE");
+  const d1 = d1Bind?.id || (await ensureD1(api, headers, accountId));
+  const kv = kvBind?.namespace_id || (await ensureKv(api, headers, accountId));
+  const queueName = qBind?.queue_name || "aether-writes";
+  await ensureQueue(api, headers, accountId, queueName);
+
+  let subdomain = accountId.slice(0, 12);
+  try {
+    const sd = await fetch(api + "/accounts/" + accountId + "/workers/subdomain", { headers });
+    const sdj = (await sd.json()) as { success: boolean; result?: { subdomain?: string } };
+    if (sdj.success && sdj.result?.subdomain) subdomain = sdj.result.subdomain;
+  } catch { /* default */ }
 
   const srcRes = await fetch(WORKER_SOURCE_URL);
   if (!srcRes.ok) throw new Error("دریافت سورس جدید ناموفق بود");
   const workerJs = await srcRes.text();
 
   const metadata = {
-    main_module: "worker.js",
+    main_module: "index.js",
     compatibility_date: "2025-01-15",
     compatibility_flags: ["nodejs_compat"],
     bindings: [
       { type: "d1", name: "DB", id: d1 },
       { type: "kv_namespace", name: "KV", namespace_id: kv },
-      { type: "queue", name: "WRITE_QUEUE", queue_name: "aether-writes" },
+      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
       { type: "durable_object_namespace", name: "USER_STATE", class_name: "UserState", script_name: workerName },
       { type: "durable_object_namespace", name: "POOL_STATE", class_name: "PoolState", script_name: workerName },
       { type: "durable_object_namespace", name: "RATE_LIMIT", class_name: "RateLimiter", script_name: workerName },
     ],
-    // keep PANEL_SECRET / ADMIN_BOOTSTRAP_PASSWORD and any plain vars
     keep_bindings: [
       { type: "secret_text", name: "PANEL_SECRET" },
       { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD" },
@@ -253,13 +285,13 @@ export async function updateWorkerDeployment(input: {
       { type: "plain_text", name: "DEFAULT_DOH" },
       { type: "plain_text", name: "PROXY_FALLBACK_HOSTS" },
     ],
-    migrations: [{ tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] }],
+    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
     observability: { enabled: true },
   };
 
   const form = new FormData();
-  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  form.set("worker.js", new Blob([workerJs], { type: "application/javascript+module" }));
+  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
   const up = await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName, {
     method: "PUT",
     headers: { Authorization: "Bearer " + token },
@@ -272,7 +304,7 @@ export async function updateWorkerDeployment(input: {
   await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
     method: "POST",
     headers,
-    body: JSON.stringify({ queue_name: "aether-writes", settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 } }),
+    body: JSON.stringify({ queue_name: queueName, settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 } }),
   }).catch(() => {});
   await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
     method: "PUT",
@@ -280,50 +312,50 @@ export async function updateWorkerDeployment(input: {
     body: JSON.stringify({ schedules: [{ cron: "* * * * *" }, { cron: "*/5 * * * *" }, { cron: "0 * * * *" }] }),
   }).catch(() => {});
 
-  const url = "https://" + workerName + "." + accountId.slice(0, 12) + ".workers.dev";
+  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
   return { ok: true, workerName, url };
 }
 
 /* ---------------- helpers ---------------- */
 
-async function ensureD1(api: string, headers: Record<string, string>, accountId: string): Promise<string> {
-  const list = await fetch(api + "/accounts/" + accountId + "/d1/database?name=aether", { headers });
+async function ensureD1(api: string, headers: Record<string, string>, accountId: string, name = "aether"): Promise<string> {
+  const list = await fetch(api + "/accounts/" + accountId + "/d1/database?name=" + encodeURIComponent(name), { headers });
   const lj = (await list.json()) as { success: boolean; result?: Array<{ uuid: string; name: string }> };
-  const existing = lj.result?.find((d) => d.name === "aether");
+  const existing = lj.result?.find((d) => d.name === name);
   if (existing) return existing.uuid;
   const create = await fetch(api + "/accounts/" + accountId + "/d1/database", {
     method: "POST",
     headers,
-    body: JSON.stringify({ name: "aether" }),
+    body: JSON.stringify({ name }),
   });
   const cj = (await create.json()) as { success: boolean; result?: { uuid: string }; errors?: { message: string }[] };
   if (!cj.success || !cj.result) throw new Error("ساخت D1 ناموفق: " + (cj.errors?.[0]?.message || ""));
   return cj.result.uuid;
 }
 
-async function ensureKv(api: string, headers: Record<string, string>, accountId: string): Promise<string> {
+async function ensureKv(api: string, headers: Record<string, string>, accountId: string, title = "aether-kv"): Promise<string> {
   const list = await fetch(api + "/accounts/" + accountId + "/storage/kv/namespaces?per_page=100", { headers });
   const lj = (await list.json()) as { result?: Array<{ id: string; title: string }> };
-  const existing = (lj.result || []).find((n) => n.title === "aether-kv");
+  const existing = (lj.result || []).find((n) => n.title === title);
   if (existing) return existing.id;
   const create = await fetch(api + "/accounts/" + accountId + "/storage/kv/namespaces", {
     method: "POST",
     headers,
-    body: JSON.stringify({ title: "aether-kv" }),
+    body: JSON.stringify({ title }),
   });
   const cj = (await create.json()) as { success: boolean; result?: { id: string }; errors?: { message: string }[] };
   if (!cj.success || !cj.result) throw new Error("ساخت KV ناموفق: " + (cj.errors?.[0]?.message || ""));
   return cj.result.id;
 }
 
-async function ensureQueue(api: string, headers: Record<string, string>, accountId: string): Promise<void> {
+async function ensureQueue(api: string, headers: Record<string, string>, accountId: string, name = "aether-writes"): Promise<void> {
   const list = await fetch(api + "/accounts/" + accountId + "/queues", { headers });
   const lj = (await list.json()) as { success: boolean; result?: Array<{ queue_name: string }> };
-  if ((lj.result || []).some((q) => q.queue_name === "aether-writes")) return;
+  if ((lj.result || []).some((q) => q.queue_name === name)) return;
   await fetch(api + "/accounts/" + accountId + "/queues", {
     method: "POST",
     headers,
-    body: JSON.stringify({ queue_name: "aether-writes" }),
+    body: JSON.stringify({ queue_name: name }),
   });
 }
 
