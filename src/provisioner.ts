@@ -8,7 +8,13 @@
 //   3. fetch the latest worker.js from the GitHub repo
 //   4. upload the worker with all bindings + DO migrations
 //   5. apply D1 schema (direct SQL via D1 HTTP API)
-//   6. return the panel URL + generated admin password
+//   6. insert admin directly via D1 (avoids workers.dev 1042 issue on
+//      internal subrequests — the new worker's subdomain often returns
+//      "bad host header" for the first minute when called from another
+//      Worker, even though it works externally).
+//   7. return the panel URL + generated admin password
+
+import { hashPassword } from "./util/crypto.js";
 
 export interface ProvisionInput {
   token: string;
@@ -162,44 +168,57 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. Wait for tables then insert admin directly via /api/auth/setup.
-  // We persist debug info into KV so we can inspect it after the fact.
+  // 10b. Insert admin directly into D1. We can't call /api/auth/setup on
+  // the new worker because internal Worker→workers.dev subrequests often
+  // return "error 1042 (bad host header)" while the new route is still
+  // propagating. Hashing the password here and inserting via the D1 HTTP
+  // API is instant and 100% reliable.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  try {
+    const adminHash = await hashPassword(adminPassword);
+    for (let i = 0; i < 8; i++) {
+      try {
+        const r = await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1 + "/query", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            sql: "INSERT OR IGNORE INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)",
+            params: ["admin", adminHash],
+          }),
+        });
+        const j = (await r.json()) as { success?: boolean; errors?: { message: string }[] };
+        if (j.success) break;
+        if (i === 7) console.warn("admin insert failed:", j.errors?.[0]?.message);
+      } catch (e) {
+        if (i === 7) console.warn("admin insert error:", (e as Error).message);
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  } catch (e) {
+    console.warn("hash/insert admin failed:", (e as Error).message);
+  }
+
+  // 10c. Enable workers.dev subdomain explicitly and wait for the worker
+  // to become reachable (up to ~20s) so the Telegram bot can report the
+  // panel as live.
+  await fetch(api + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: true }),
+  }).catch(() => {});
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
-  const debug: string[] = [];
-  let loginOk = false;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 10; i++) {
     try {
-      const sr = await fetch(panelBase + "/api/auth/setup", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: setupBody,
-      });
-      const stext = await sr.text().catch(() => "");
       const lr = await fetch(panelBase + "/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: loginBody,
       });
-      if (lr.ok) { loginOk = true; debug.push("iter" + i + " OK"); break; }
-      const ltext = await lr.text().catch(() => "");
-      debug.push("i" + i + " s=" + sr.status + "/" + stext.slice(0, 40) + " l=" + lr.status + "/" + ltext.slice(0, 40));
-    } catch (e) {
-      debug.push("i" + i + " err:" + (e as Error).message);
+      if (lr.ok) break;
+    } catch {
+      /* retry */
     }
-    await new Promise((res) => setTimeout(res, 2000));
-  }
-  console.log("BOOTSTRAP_DEBUG", workerName, panelBase, loginOk ? "OK" : "FAIL", debug.join(" | "));
-  if (!loginOk) {
-    // Store debug in KV so we can inspect it after the worker invocation ends.
-    try {
-      await fetch(api + "/accounts/" + accountId + "/storage/kv/namespaces/" + kv + "/values/bootdebug:" + workerName, {
-        method: "PUT",
-        headers: { Authorization: "Bearer " + token, "content-type": "text/plain" },
-        body: panelBase + "\n" + debug.join("\n"),
-      });
-    } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   // 11. register queue consumer

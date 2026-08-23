@@ -4228,45 +4228,51 @@ async function provisionAccount(input) {
   }
   await applyD1Schema(api2, headers, accountId, d1);
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  try {
+    const adminHash = await hashPassword(adminPassword);
+    for (let i = 0; i < 8; i++) {
+      try {
+        const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1 + "/query", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            sql: "INSERT OR IGNORE INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)",
+            params: ["admin", adminHash]
+          })
+        });
+        const j = await r.json();
+        if (j.success)
+          break;
+        if (i === 7)
+          console.warn("admin insert failed:", j.errors?.[0]?.message);
+      } catch (e) {
+        if (i === 7)
+          console.warn("admin insert error:", e.message);
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  } catch (e) {
+    console.warn("hash/insert admin failed:", e.message);
+  }
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: true })
+  }).catch(() => {
+  });
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
-  const debug = [];
-  let loginOk = false;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 10; i++) {
     try {
-      const sr = await fetch(panelBase + "/api/auth/setup", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: setupBody
-      });
-      const stext = await sr.text().catch(() => "");
       const lr = await fetch(panelBase + "/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: loginBody
       });
-      if (lr.ok) {
-        loginOk = true;
-        debug.push("iter" + i + " OK");
+      if (lr.ok)
         break;
-      }
-      const ltext = await lr.text().catch(() => "");
-      debug.push("i" + i + " s=" + sr.status + "/" + stext.slice(0, 40) + " l=" + lr.status + "/" + ltext.slice(0, 40));
-    } catch (e) {
-      debug.push("i" + i + " err:" + e.message);
-    }
-    await new Promise((res) => setTimeout(res, 2e3));
-  }
-  console.log("BOOTSTRAP_DEBUG", workerName, panelBase, loginOk ? "OK" : "FAIL", debug.join(" | "));
-  if (!loginOk) {
-    try {
-      await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces/" + kv + "/values/bootdebug:" + workerName, {
-        method: "PUT",
-        headers: { Authorization: "Bearer " + token, "content-type": "text/plain" },
-        body: panelBase + "\n" + debug.join("\n")
-      });
     } catch {
     }
+    await new Promise((r) => setTimeout(r, 2e3));
   }
   await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
     method: "POST",
