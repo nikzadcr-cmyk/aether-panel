@@ -27,11 +27,20 @@ authRoutes.post("/setup", async (c) => {
 authRoutes.post("/auto-bootstrap", async (c) => {
   const env = c.env;
   if (!env.ADMIN_BOOTSTRAP_PASSWORD) return c.json({ error: "no bootstrap secret" }, 400);
-  const existing = await env.DB.prepare("SELECT COUNT(*) AS n FROM admins").first<{ n: number }>();
-  if (existing && existing.n > 0) return c.json({ ok: true, already: true });
-  const hash = await hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD);
-  await env.DB.prepare("INSERT INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)")
-    .bind("admin", hash).run();
+  // Retry briefly — D1 schema may still be propagating right after deploy.
+  for (let i = 0; i < 6; i++) {
+    try {
+      const existing = await env.DB.prepare("SELECT COUNT(*) AS n FROM admins").first<{ n: number }>();
+      if (existing && existing.n > 0) return c.json({ ok: true, already: true });
+      const hash = await hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD);
+      await env.DB.prepare("INSERT INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)")
+        .bind("admin", hash).run();
+      return c.json({ ok: true });
+    } catch (e) {
+      if (i === 5) throw e;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
   return c.json({ ok: true });
 });
 

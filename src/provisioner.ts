@@ -160,23 +160,22 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. Bootstrap admin via the worker endpoint. The worker may answer
-  // before D1 schema has finished propagating, in which case auto-bootstrap
-  // returns ok:true but the row isn't actually written. We verify by logging
-  // in; if that fails, we keep calling auto-bootstrap for up to ~90s.
+  // 10b. Wait briefly (max ~15s) for auto-bootstrap to succeed. The worker
+  // itself only creates the admin when D1 is ready; we keep trying until
+  // login succeeds, but cap the wait so we don't exceed Worker subrequest
+  // limits. If D1 takes longer than this, the panel is still deployed and
+  // the admin will be created on the first user visit.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 10; i++) {
     try {
-      const br = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
-      if (br.ok) {
-        const lr = await fetch(panelBase + "/api/auth/login", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: adminLogin,
-        });
-        if (lr.ok) break;
-      }
+      await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" }).catch(() => {});
+      const lr = await fetch(panelBase + "/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: adminLogin,
+      });
+      if (lr.ok) break;
     } catch {
       /* retry */
     }
