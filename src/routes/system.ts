@@ -104,3 +104,68 @@ systemRoutes.put("/settings", requireRole("owner", "admin"), async (c) => {
   if (stmts.length) await c.env.DB.batch(stmts);
   return c.json({ ok: true });
 });
+
+// ---------------- in-panel self-update ----------------
+//
+// Compares the running BUNDLE_REF with the latest commit on GitHub
+// main. The UI shows a banner when a newer commit exists; the update
+// endpoint re-uses the same provisioner routine the Telegram bot uses.
+
+import { updateWorkerDeployment } from "../provisioner.js";
+import { BUNDLE_REF } from "../provisioner.js";
+
+const LATEST_REF_URL =
+  "https://api.github.com/repos/nikzadcr-cmyk/aether-panel/commits/main";
+
+systemRoutes.get("/update/check", async (c) => {
+  const current = BUNDLE_REF;
+  try {
+    const r = await fetch(LATEST_REF_URL, {
+      headers: { "User-Agent": "nikzad-panel", Accept: "application/vnd.github+json" },
+      cf: { cacheTtl: 60, cacheEverything: true },
+    });
+    if (!r.ok) return c.json({ ok: true, current, latest: current, behind: false, note: "github-unreachable" });
+    const j = (await r.json()) as { sha?: string; commit?: { message?: string; author?: { date?: string } } };
+    const latest = (j.sha || current).slice(0, 40);
+    const message = j.commit?.message?.split("\n")[0] || "";
+    const date = j.commit?.author?.date || "";
+    return c.json({
+      ok: true,
+      current,
+      latest,
+      behind: latest !== current,
+      message,
+      date,
+    });
+  } catch (e) {
+    return c.json({ ok: true, current, latest: current, behind: false, note: (e as Error).message });
+  }
+});
+
+systemRoutes.post("/update/run", requireRole("owner"), async (c) => {
+  const env = c.env;
+  if (!env.CF_API_TOKEN) {
+    return c.json(
+      { ok: false, error: "توکن CF_API_TOKEN روی ورکر ست نشده. از طریق تلگرام یا wrangler secret put CF_API_TOKEN آن را تنظیم کن." },
+      400
+    );
+  }
+  const host = new URL(c.req.url).hostname;
+  // Worker hostname is the first label (aether-panel for *.workers.dev).
+  const workerName = env.CF_SCRIPT_NAME || host.split(".")[0]!;
+  const token = env.CF_API_TOKEN;
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        await updateWorkerDeployment({
+          token: token!,
+          accountId: env.CF_ACCOUNT_ID,
+          workerName,
+        });
+      } catch (e) {
+        console.error("self-update failed", e);
+      }
+    })()
+  );
+  return c.json({ ok: true, workerName, message: "آپدیت در پس‌زمینه شروع شد. ۲۰ ثانیه دیگر صفحه را رفرش کن." });
+});

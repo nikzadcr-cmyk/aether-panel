@@ -3970,6 +3970,80 @@ proxyRoutes.post("/:id/toggle", requireRole("owner", "admin"), async (c) => {
   await syncPool(c.env);
   return c.json({ ok: true });
 });
+proxyRoutes.post("/bulk-ping", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const results = Array.isArray(body.results) ? body.results : [];
+  if (!results.length)
+    return c.json({ ok: true, updated: 0 });
+  const now = nowSec();
+  const stmts = results.slice(0, 500).map((r) => {
+    const ok = r.ok ? 1 : 0;
+    const newRate = r.ok ? 100 : 0;
+    return c.env.DB.prepare(
+      `UPDATE proxies
+       SET latency_ms = CASE WHEN ? = 1 THEN ? ELSE latency_ms END,
+           last_checked = ?,
+           fail_count = CASE WHEN ? = 1 THEN 0 ELSE fail_count + 1 END,
+           success_rate = CASE
+             WHEN success_rate = 100 AND last_checked = 0 THEN ?
+             ELSE CAST((success_rate * 4 + ?) / 5 AS INTEGER)
+           END,
+           is_active = CASE WHEN fail_count >= 5 THEN 0 ELSE is_active END,
+           country = COALESCE(?, country)
+       WHERE uri = ?`
+    ).bind(ok, r.latencyMs ?? null, now, ok, newRate, newRate, r.country || null, r.uri);
+  });
+  await c.env.DB.batch(stmts);
+  await syncPool(c.env);
+  return c.json({ ok: true, updated: stmts.length });
+});
+proxyRoutes.post("/geoip", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const hosts = Array.from(new Set((body.hosts || []).slice(0, 100))).filter(Boolean);
+  if (!hosts.length)
+    return c.json({ results: {} });
+  const cacheKey = (h) => "geoip:" + h;
+  const out = {};
+  const missing = [];
+  await Promise.all(
+    hosts.map(async (h) => {
+      const cached = await c.env.KV.get(cacheKey(h), "json").catch(() => null);
+      if (cached)
+        out[h] = cached;
+      else
+        missing.push(h);
+    })
+  );
+  if (missing.length) {
+    try {
+      const r = await fetch("http://ip-api.com/batch?fields=status,country,countryCode,city,isp,query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(missing)
+      });
+      if (r.ok) {
+        const arr = await r.json();
+        for (const item of arr) {
+          if (item.status !== "success")
+            continue;
+          const data = {
+            country: item.country,
+            countryCode: item.countryCode,
+            city: item.city,
+            isp: item.isp
+          };
+          out[item.query] = data;
+          c.executionCtx.waitUntil(
+            c.env.KV.put(cacheKey(item.query), JSON.stringify(data), { expirationTtl: 86400 })
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("geoip failed", e);
+    }
+  }
+  return c.json({ results: out });
+});
 function normalizeUri(u) {
   const t = u.trim();
   if (!t || t.startsWith("#"))
@@ -4022,6 +4096,440 @@ async function syncPool(env) {
     total += list.length;
   }
   return total;
+}
+
+// src/provisioner.ts
+var BUNDLE_REF = "085a32d5734ed359c613b57fa72bd769ca43d9f2";
+var BUNDLE_BASE = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
+var WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
+var SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";
+async function provisionAccount(input) {
+  const token = input.token.trim();
+  if (!token)
+    throw new Error("\u062A\u0648\u06A9\u0646 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A");
+  const headers = {
+    Authorization: "Bearer " + token,
+    "Content-Type": "application/json"
+  };
+  const api2 = "https://api.cloudflare.com/client/v4";
+  const verify = await fetch(api2 + "/user/tokens/verify", { headers });
+  const vj = await verify.json();
+  if (!vj.success) {
+    throw new Error("\u062A\u0648\u06A9\u0646 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: " + (vj.errors?.[0]?.message || "unknown"));
+  }
+  const accRes = await fetch(api2 + "/accounts", { headers });
+  const accJson = await accRes.json();
+  if (!accJson.success || !accJson.result?.length) {
+    throw new Error("\u062D\u0633\u0627\u0628 \u06A9\u0644\u0648\u062F\u0641\u0644\u0631 \u067E\u06CC\u062F\u0627 \u0646\u0634\u062F: " + (accJson.errors?.[0]?.message || ""));
+  }
+  const accountId = accJson.result[0].id;
+  const workerName = (input.workerName || "aether-panel-" + randomSuffix(6)).toLowerCase();
+  const suffix = workerName.replace(/[^a-z0-9]/g, "").slice(0, 24) || randomSuffix(6);
+  const d1Name = "aether-" + suffix;
+  const kvName = "aether-kv-" + suffix;
+  const queueName = "aether-q-" + suffix.slice(0, 20);
+  const d1 = await ensureD1(api2, headers, accountId, d1Name);
+  const kv = await ensureKv(api2, headers, accountId, kvName);
+  await ensureQueue(api2, headers, accountId, queueName);
+  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
+  if (!srcRes.ok)
+    throw new Error("\u062F\u0631\u06CC\u0627\u0641\u062A \u0633\u0648\u0631\u0633 \u0648\u0631\u06A9\u0631 \u0627\u0632 \u06AF\u06CC\u062A\u200C\u0647\u0627\u0628 \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062F");
+  const workerJs = await srcRes.text();
+  const panelSecret = randomHex(32);
+  const adminPassword = randomReadablePassword();
+  const adminUser = "admin";
+  const subdomain = await ensureAccountSubdomain(api2, headers, accountId, token);
+  const metadata = {
+    main_module: "index.js",
+    compatibility_date: "2025-01-15",
+    compatibility_flags: ["nodejs_compat"],
+    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
+    bindings: [
+      { type: "d1", name: "DB", id: d1 },
+      { type: "kv_namespace", name: "KV", namespace_id: kv },
+      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
+      {
+        type: "durable_object_namespace",
+        name: "USER_STATE",
+        class_name: "UserState"
+      },
+      {
+        type: "durable_object_namespace",
+        name: "POOL_STATE",
+        class_name: "PoolState"
+      },
+      {
+        type: "durable_object_namespace",
+        name: "RATE_LIMIT",
+        class_name: "RateLimiter"
+      },
+      { type: "plain_text", name: "APP_NAME", text: "Nikzad Panel" },
+      { type: "plain_text", name: "APP_VERSION", text: "0.1.0" },
+      {
+        type: "plain_text",
+        name: "PRIMARY_FETCH",
+        text: "https://raw.githubusercontent.com/panel-zeus/Z-E-U-S/main/ips.txt"
+      },
+      {
+        type: "plain_text",
+        name: "DEFAULT_DOH",
+        text: "https://cloudflare-dns.com/dns-query"
+      },
+      { type: "plain_text", name: "PROXY_FALLBACK_HOSTS", text: "fra,ams,lhr,cdg,fra2" },
+      { type: "secret_text", name: "PANEL_SECRET", text: panelSecret },
+      { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD", text: adminPassword }
+    ],
+    observability: { enabled: true }
+  };
+  const form = new FormData();
+  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
+  const upload = await fetch(
+    api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName,
+    { method: "PUT", headers: { Authorization: "Bearer " + token }, body: form }
+  );
+  const upJson = await upload.json();
+  if (!upJson.success) {
+    throw new Error("\u0622\u067E\u0644\u0648\u062F \u0648\u0631\u06A9\u0631 \u0646\u0627\u0645\u0648\u0641\u0642: " + (upJson.errors?.[0]?.message || "unknown"));
+  }
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: true })
+  }).catch(() => {
+  });
+  await applyD1Schema(api2, headers, accountId, d1);
+  const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
+  try {
+    const adminHash = await hashPassword(adminPassword);
+    for (let i = 0; i < 8; i++) {
+      try {
+        const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1 + "/query", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            sql: "INSERT OR IGNORE INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)",
+            params: ["admin", adminHash]
+          })
+        });
+        const j = await r.json();
+        if (j.success)
+          break;
+        if (i === 7)
+          console.warn("admin insert failed:", j.errors?.[0]?.message);
+      } catch (e) {
+        if (i === 7)
+          console.warn("admin insert error:", e.message);
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  } catch (e) {
+    console.warn("hash/insert admin failed:", e.message);
+  }
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ enabled: true })
+  }).catch(() => {
+  });
+  const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  for (let i = 0; i < 10; i++) {
+    try {
+      const lr = await fetch(panelBase + "/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: loginBody
+      });
+      if (lr.ok)
+        break;
+    } catch {
+    }
+    await new Promise((r) => setTimeout(r, 2e3));
+  }
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      queue_name: queueName,
+      dead_letter_queue: void 0,
+      settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 }
+    })
+  }).catch(() => {
+  });
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      schedules: [
+        { cron: "* * * * *" },
+        { cron: "*/5 * * * *" },
+        { cron: "0 * * * *" }
+      ]
+    })
+  }).catch(() => {
+  });
+  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
+  return {
+    ok: true,
+    workerName,
+    url,
+    d1Id: d1,
+    kvId: kv,
+    adminUser,
+    adminPassword,
+    panelSecret
+  };
+}
+async function updateWorkerDeployment(input) {
+  const token = input.token.trim();
+  if (!token)
+    throw new Error("\u062A\u0648\u06A9\u0646 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A");
+  const api2 = "https://api.cloudflare.com/client/v4";
+  const headers = {
+    Authorization: "Bearer " + token,
+    "Content-Type": "application/json"
+  };
+  let accountId = input.accountId;
+  if (!accountId) {
+    const accRes = await fetch(api2 + "/accounts", { headers });
+    const aj = await accRes.json();
+    if (!aj.success || !aj.result?.length)
+      throw new Error("\u062D\u0633\u0627\u0628 \u067E\u06CC\u062F\u0627 \u0646\u0634\u062F: " + (aj.errors?.[0]?.message || ""));
+    accountId = aj.result[0].id;
+  }
+  const workerName = input.workerName;
+  const cur = await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/settings", { headers });
+  const curJson = await cur.json();
+  const binds = curJson.success ? curJson.result?.bindings || [] : [];
+  const d1Bind = binds.find((b) => b.type === "d1" && b.name === "DB");
+  const kvBind = binds.find((b) => b.type === "kv_namespace" && b.name === "KV");
+  const qBind = binds.find((b) => b.type === "queue" && b.name === "WRITE_QUEUE");
+  const d1 = d1Bind?.id || await ensureD1(api2, headers, accountId);
+  const kv = kvBind?.namespace_id || await ensureKv(api2, headers, accountId);
+  const queueName = qBind?.queue_name || "aether-writes";
+  await ensureQueue(api2, headers, accountId, queueName);
+  let subdomain = accountId.slice(0, 12);
+  try {
+    const sd = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", { headers });
+    const sdj = await sd.json();
+    if (sdj.success && sdj.result?.subdomain)
+      subdomain = sdj.result.subdomain;
+  } catch {
+  }
+  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
+  if (!srcRes.ok)
+    throw new Error("\u062F\u0631\u06CC\u0627\u0641\u062A \u0633\u0648\u0631\u0633 \u062C\u062F\u06CC\u062F \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062F");
+  const workerJs = await srcRes.text();
+  const metadata = {
+    main_module: "index.js",
+    compatibility_date: "2025-01-15",
+    compatibility_flags: ["nodejs_compat"],
+    bindings: [
+      { type: "d1", name: "DB", id: d1 },
+      { type: "kv_namespace", name: "KV", namespace_id: kv },
+      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
+      { type: "durable_object_namespace", name: "USER_STATE", class_name: "UserState", script_name: workerName },
+      { type: "durable_object_namespace", name: "POOL_STATE", class_name: "PoolState", script_name: workerName },
+      { type: "durable_object_namespace", name: "RATE_LIMIT", class_name: "RateLimiter", script_name: workerName }
+    ],
+    keep_bindings: [
+      { type: "secret_text", name: "PANEL_SECRET" },
+      { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD" },
+      { type: "plain_text", name: "APP_NAME" },
+      { type: "plain_text", name: "APP_VERSION" },
+      { type: "plain_text", name: "PRIMARY_FETCH" },
+      { type: "plain_text", name: "DEFAULT_DOH" },
+      { type: "plain_text", name: "PROXY_FALLBACK_HOSTS" }
+    ],
+    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
+    observability: { enabled: true }
+  };
+  const form = new FormData();
+  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
+  const up = await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName, {
+    method: "PUT",
+    headers: { Authorization: "Bearer " + token },
+    body: form
+  });
+  const uj = await up.json();
+  if (!uj.success)
+    throw new Error("\u0622\u067E\u0644\u0648\u062F \u0633\u0648\u0631\u0633 \u062C\u062F\u06CC\u062F \u0646\u0627\u0645\u0648\u0641\u0642: " + (uj.errors?.[0]?.message || ""));
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ queue_name: queueName, settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 } })
+  }).catch(() => {
+  });
+  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ schedules: [{ cron: "* * * * *" }, { cron: "*/5 * * * *" }, { cron: "0 * * * *" }] })
+  }).catch(() => {
+  });
+  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
+  return { ok: true, workerName, url };
+}
+async function ensureAccountSubdomain(api2, headers, accountId, token) {
+  try {
+    const sd = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", { headers });
+    const sdj = await sd.json();
+    if (sdj.success && sdj.result?.subdomain)
+      return sdj.result.subdomain;
+  } catch {
+  }
+  const candidate = "nikzad-" + randomSuffix(6);
+  const r = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", {
+    method: "PUT",
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ subdomain: candidate })
+  });
+  const j = await r.json();
+  if (j.success && j.result?.subdomain)
+    return j.result.subdomain;
+  const fallback = "nikzad-" + randomSuffix(8);
+  const r2 = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", {
+    method: "PUT",
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ subdomain: fallback })
+  });
+  const j2 = await r2.json();
+  if (j2.success && j2.result?.subdomain)
+    return j2.result.subdomain;
+  console.warn("could not create workers.dev subdomain:", j2.errors?.[0]?.message);
+  return accountId.slice(0, 12);
+}
+async function ensureD1(api2, headers, accountId, name = "aether") {
+  const list = await fetch(api2 + "/accounts/" + accountId + "/d1/database?name=" + encodeURIComponent(name), { headers });
+  const lj = await list.json();
+  const existing = lj.result?.find((d) => d.name === name);
+  if (existing)
+    return existing.uuid;
+  const create = await fetch(api2 + "/accounts/" + accountId + "/d1/database", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name })
+  });
+  const cj = await create.json();
+  if (!cj.success || !cj.result)
+    throw new Error("\u0633\u0627\u062E\u062A D1 \u0646\u0627\u0645\u0648\u0641\u0642: " + (cj.errors?.[0]?.message || ""));
+  return cj.result.uuid;
+}
+async function ensureKv(api2, headers, accountId, title = "aether-kv") {
+  const list = await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces?per_page=100", { headers });
+  const lj = await list.json();
+  const existing = (lj.result || []).find((n) => n.title === title);
+  if (existing)
+    return existing.id;
+  const create = await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ title })
+  });
+  const cj = await create.json();
+  if (!cj.success || !cj.result)
+    throw new Error("\u0633\u0627\u062E\u062A KV \u0646\u0627\u0645\u0648\u0641\u0642: " + (cj.errors?.[0]?.message || ""));
+  return cj.result.id;
+}
+async function ensureQueue(api2, headers, accountId, name = "aether-writes") {
+  const list = await fetch(api2 + "/accounts/" + accountId + "/queues", { headers });
+  const lj = await list.json();
+  if ((lj.result || []).some((q) => q.queue_name === name))
+    return;
+  await fetch(api2 + "/accounts/" + accountId + "/queues", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ queue_name: name })
+  });
+}
+async function applyD1Schema(api2, headers, accountId, d1Id) {
+  const res = await fetch(SCHEMA_URL + "?v=" + Date.now());
+  if (!res.ok)
+    return;
+  let sql = await res.text();
+  sql = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
+  const stmts = sql.split(/;(?:\s|\n|$)/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.startsWith("PRAGMA"));
+  if (stmts.length === 0)
+    return;
+  try {
+    const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sql: stmts.join(";\n") + ";" })
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      if (!/already exists|duplicate/i.test(body)) {
+        console.warn("D1 schema batch failed, falling back to per-statement:", body.slice(0, 300));
+        for (const stmt of stmts) {
+          try {
+            await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ sql: stmt })
+            });
+          } catch (e) {
+            console.warn("D1 schema stmt failed:", e.message);
+          }
+        }
+      }
+    } else {
+      const j = await r.json();
+      if (j.errors?.length) {
+        const realErr = j.errors.find((e) => !/already exists|duplicate/i.test(e.message));
+        if (realErr)
+          console.warn("D1 schema error:", realErr.message);
+      }
+      if (Array.isArray(j.result)) {
+        j.result.forEach((rr, i) => {
+          if (rr && rr.success === false && rr.error && !/already exists|duplicate/i.test(rr.error)) {
+            console.warn("D1 stmt[" + i + "] failed:", rr.error, stmts[i]?.slice(0, 80));
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("D1 schema fetch error:", e.message);
+  }
+}
+function randomSuffix(n) {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  const arr = new Uint8Array(n);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < n; i++)
+    out += chars[arr[i] % chars.length];
+  return out;
+}
+function randomHex(n) {
+  const arr = new Uint8Array(n);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function randomReadablePassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnpqrstuvwxyz";
+  const digit = "23456789";
+  const all = upper + lower + digit;
+  const out = [];
+  const a = new Uint8Array(12);
+  crypto.getRandomValues(a);
+  out.push(upper[a[0] % upper.length]);
+  out.push(lower[a[1] % lower.length]);
+  out.push(digit[a[2] % digit.length]);
+  for (let i = 3; i < 12; i++)
+    out.push(all[a[i] % all.length]);
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = a[i] % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out.join("");
 }
 
 // src/routes/system.ts
@@ -4117,6 +4625,58 @@ systemRoutes.put("/settings", requireRole("owner", "admin"), async (c) => {
   if (stmts.length)
     await c.env.DB.batch(stmts);
   return c.json({ ok: true });
+});
+var LATEST_REF_URL = "https://api.github.com/repos/nikzadcr-cmyk/aether-panel/commits/main";
+systemRoutes.get("/update/check", async (c) => {
+  const current = BUNDLE_REF;
+  try {
+    const r = await fetch(LATEST_REF_URL, {
+      headers: { "User-Agent": "nikzad-panel", Accept: "application/vnd.github+json" },
+      cf: { cacheTtl: 60, cacheEverything: true }
+    });
+    if (!r.ok)
+      return c.json({ ok: true, current, latest: current, behind: false, note: "github-unreachable" });
+    const j = await r.json();
+    const latest = (j.sha || current).slice(0, 40);
+    const message = j.commit?.message?.split("\n")[0] || "";
+    const date = j.commit?.author?.date || "";
+    return c.json({
+      ok: true,
+      current,
+      latest,
+      behind: latest !== current,
+      message,
+      date
+    });
+  } catch (e) {
+    return c.json({ ok: true, current, latest: current, behind: false, note: e.message });
+  }
+});
+systemRoutes.post("/update/run", requireRole("owner"), async (c) => {
+  const env = c.env;
+  if (!env.CF_API_TOKEN) {
+    return c.json(
+      { ok: false, error: "\u062A\u0648\u06A9\u0646 CF_API_TOKEN \u0631\u0648\u06CC \u0648\u0631\u06A9\u0631 \u0633\u062A \u0646\u0634\u062F\u0647. \u0627\u0632 \u0637\u0631\u06CC\u0642 \u062A\u0644\u06AF\u0631\u0627\u0645 \u06CC\u0627 wrangler secret put CF_API_TOKEN \u0622\u0646 \u0631\u0627 \u062A\u0646\u0638\u06CC\u0645 \u06A9\u0646." },
+      400
+    );
+  }
+  const host = new URL(c.req.url).hostname;
+  const workerName = env.CF_SCRIPT_NAME || host.split(".")[0];
+  const token = env.CF_API_TOKEN;
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        await updateWorkerDeployment({
+          token,
+          accountId: env.CF_ACCOUNT_ID,
+          workerName
+        });
+      } catch (e) {
+        console.error("self-update failed", e);
+      }
+    })()
+  );
+  return c.json({ ok: true, workerName, message: "\u0622\u067E\u062F\u06CC\u062A \u062F\u0631 \u067E\u0633\u200C\u0632\u0645\u06CC\u0646\u0647 \u0634\u0631\u0648\u0639 \u0634\u062F. \u06F2\u06F0 \u062B\u0627\u0646\u06CC\u0647 \u062F\u06CC\u06AF\u0631 \u0635\u0641\u062D\u0647 \u0631\u0627 \u0631\u0641\u0631\u0634 \u06A9\u0646." });
 });
 
 // src/services/scanner.ts
@@ -4672,440 +5232,6 @@ scannerRoutes.post("/finder/import", requireRole("owner", "admin"), async (c) =>
   await c.env.DB.batch(stmts);
   return c.json({ ok: true, imported: uris.length });
 });
-
-// src/provisioner.ts
-var BUNDLE_REF = "085a32d5734ed359c613b57fa72bd769ca43d9f2";
-var BUNDLE_BASE = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
-var WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
-var SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";
-async function provisionAccount(input) {
-  const token = input.token.trim();
-  if (!token)
-    throw new Error("\u062A\u0648\u06A9\u0646 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A");
-  const headers = {
-    Authorization: "Bearer " + token,
-    "Content-Type": "application/json"
-  };
-  const api2 = "https://api.cloudflare.com/client/v4";
-  const verify = await fetch(api2 + "/user/tokens/verify", { headers });
-  const vj = await verify.json();
-  if (!vj.success) {
-    throw new Error("\u062A\u0648\u06A9\u0646 \u0646\u0627\u0645\u0639\u062A\u0628\u0631: " + (vj.errors?.[0]?.message || "unknown"));
-  }
-  const accRes = await fetch(api2 + "/accounts", { headers });
-  const accJson = await accRes.json();
-  if (!accJson.success || !accJson.result?.length) {
-    throw new Error("\u062D\u0633\u0627\u0628 \u06A9\u0644\u0648\u062F\u0641\u0644\u0631 \u067E\u06CC\u062F\u0627 \u0646\u0634\u062F: " + (accJson.errors?.[0]?.message || ""));
-  }
-  const accountId = accJson.result[0].id;
-  const workerName = (input.workerName || "aether-panel-" + randomSuffix(6)).toLowerCase();
-  const suffix = workerName.replace(/[^a-z0-9]/g, "").slice(0, 24) || randomSuffix(6);
-  const d1Name = "aether-" + suffix;
-  const kvName = "aether-kv-" + suffix;
-  const queueName = "aether-q-" + suffix.slice(0, 20);
-  const d1 = await ensureD1(api2, headers, accountId, d1Name);
-  const kv = await ensureKv(api2, headers, accountId, kvName);
-  await ensureQueue(api2, headers, accountId, queueName);
-  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
-  if (!srcRes.ok)
-    throw new Error("\u062F\u0631\u06CC\u0627\u0641\u062A \u0633\u0648\u0631\u0633 \u0648\u0631\u06A9\u0631 \u0627\u0632 \u06AF\u06CC\u062A\u200C\u0647\u0627\u0628 \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062F");
-  const workerJs = await srcRes.text();
-  const panelSecret = randomHex(32);
-  const adminPassword = randomReadablePassword();
-  const adminUser = "admin";
-  const subdomain = await ensureAccountSubdomain(api2, headers, accountId, token);
-  const metadata = {
-    main_module: "index.js",
-    compatibility_date: "2025-01-15",
-    compatibility_flags: ["nodejs_compat"],
-    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
-    bindings: [
-      { type: "d1", name: "DB", id: d1 },
-      { type: "kv_namespace", name: "KV", namespace_id: kv },
-      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
-      {
-        type: "durable_object_namespace",
-        name: "USER_STATE",
-        class_name: "UserState"
-      },
-      {
-        type: "durable_object_namespace",
-        name: "POOL_STATE",
-        class_name: "PoolState"
-      },
-      {
-        type: "durable_object_namespace",
-        name: "RATE_LIMIT",
-        class_name: "RateLimiter"
-      },
-      { type: "plain_text", name: "APP_NAME", text: "Nikzad Panel" },
-      { type: "plain_text", name: "APP_VERSION", text: "0.1.0" },
-      {
-        type: "plain_text",
-        name: "PRIMARY_FETCH",
-        text: "https://raw.githubusercontent.com/panel-zeus/Z-E-U-S/main/ips.txt"
-      },
-      {
-        type: "plain_text",
-        name: "DEFAULT_DOH",
-        text: "https://cloudflare-dns.com/dns-query"
-      },
-      { type: "plain_text", name: "PROXY_FALLBACK_HOSTS", text: "fra,ams,lhr,cdg,fra2" },
-      { type: "secret_text", name: "PANEL_SECRET", text: panelSecret },
-      { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD", text: adminPassword }
-    ],
-    observability: { enabled: true }
-  };
-  const form = new FormData();
-  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
-  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
-  const upload = await fetch(
-    api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName,
-    { method: "PUT", headers: { Authorization: "Bearer " + token }, body: form }
-  );
-  const upJson = await upload.json();
-  if (!upJson.success) {
-    throw new Error("\u0622\u067E\u0644\u0648\u062F \u0648\u0631\u06A9\u0631 \u0646\u0627\u0645\u0648\u0641\u0642: " + (upJson.errors?.[0]?.message || "unknown"));
-  }
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ enabled: true })
-  }).catch(() => {
-  });
-  await applyD1Schema(api2, headers, accountId, d1);
-  const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  try {
-    const adminHash = await hashPassword(adminPassword);
-    for (let i = 0; i < 8; i++) {
-      try {
-        const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1 + "/query", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            sql: "INSERT OR IGNORE INTO admins (username, password_hash, role, is_active) VALUES (?, ?, 'owner', 1)",
-            params: ["admin", adminHash]
-          })
-        });
-        const j = await r.json();
-        if (j.success)
-          break;
-        if (i === 7)
-          console.warn("admin insert failed:", j.errors?.[0]?.message);
-      } catch (e) {
-        if (i === 7)
-          console.warn("admin insert error:", e.message);
-      }
-      await new Promise((r) => setTimeout(r, 800));
-    }
-  } catch (e) {
-    console.warn("hash/insert admin failed:", e.message);
-  }
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/subdomain", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ enabled: true })
-  }).catch(() => {
-  });
-  const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
-  for (let i = 0; i < 10; i++) {
-    try {
-      const lr = await fetch(panelBase + "/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: loginBody
-      });
-      if (lr.ok)
-        break;
-    } catch {
-    }
-    await new Promise((r) => setTimeout(r, 2e3));
-  }
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      queue_name: queueName,
-      dead_letter_queue: void 0,
-      settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 }
-    })
-  }).catch(() => {
-  });
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({
-      schedules: [
-        { cron: "* * * * *" },
-        { cron: "*/5 * * * *" },
-        { cron: "0 * * * *" }
-      ]
-    })
-  }).catch(() => {
-  });
-  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
-  return {
-    ok: true,
-    workerName,
-    url,
-    d1Id: d1,
-    kvId: kv,
-    adminUser,
-    adminPassword,
-    panelSecret
-  };
-}
-async function updateWorkerDeployment(input) {
-  const token = input.token.trim();
-  if (!token)
-    throw new Error("\u062A\u0648\u06A9\u0646 \u062E\u0627\u0644\u06CC \u0627\u0633\u062A");
-  const api2 = "https://api.cloudflare.com/client/v4";
-  const headers = {
-    Authorization: "Bearer " + token,
-    "Content-Type": "application/json"
-  };
-  let accountId = input.accountId;
-  if (!accountId) {
-    const accRes = await fetch(api2 + "/accounts", { headers });
-    const aj = await accRes.json();
-    if (!aj.success || !aj.result?.length)
-      throw new Error("\u062D\u0633\u0627\u0628 \u067E\u06CC\u062F\u0627 \u0646\u0634\u062F: " + (aj.errors?.[0]?.message || ""));
-    accountId = aj.result[0].id;
-  }
-  const workerName = input.workerName;
-  const cur = await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/settings", { headers });
-  const curJson = await cur.json();
-  const binds = curJson.success ? curJson.result?.bindings || [] : [];
-  const d1Bind = binds.find((b) => b.type === "d1" && b.name === "DB");
-  const kvBind = binds.find((b) => b.type === "kv_namespace" && b.name === "KV");
-  const qBind = binds.find((b) => b.type === "queue" && b.name === "WRITE_QUEUE");
-  const d1 = d1Bind?.id || await ensureD1(api2, headers, accountId);
-  const kv = kvBind?.namespace_id || await ensureKv(api2, headers, accountId);
-  const queueName = qBind?.queue_name || "aether-writes";
-  await ensureQueue(api2, headers, accountId, queueName);
-  let subdomain = accountId.slice(0, 12);
-  try {
-    const sd = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", { headers });
-    const sdj = await sd.json();
-    if (sdj.success && sdj.result?.subdomain)
-      subdomain = sdj.result.subdomain;
-  } catch {
-  }
-  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
-  if (!srcRes.ok)
-    throw new Error("\u062F\u0631\u06CC\u0627\u0641\u062A \u0633\u0648\u0631\u0633 \u062C\u062F\u06CC\u062F \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062F");
-  const workerJs = await srcRes.text();
-  const metadata = {
-    main_module: "index.js",
-    compatibility_date: "2025-01-15",
-    compatibility_flags: ["nodejs_compat"],
-    bindings: [
-      { type: "d1", name: "DB", id: d1 },
-      { type: "kv_namespace", name: "KV", namespace_id: kv },
-      { type: "queue", name: "WRITE_QUEUE", queue_name: queueName },
-      { type: "durable_object_namespace", name: "USER_STATE", class_name: "UserState", script_name: workerName },
-      { type: "durable_object_namespace", name: "POOL_STATE", class_name: "PoolState", script_name: workerName },
-      { type: "durable_object_namespace", name: "RATE_LIMIT", class_name: "RateLimiter", script_name: workerName }
-    ],
-    keep_bindings: [
-      { type: "secret_text", name: "PANEL_SECRET" },
-      { type: "secret_text", name: "ADMIN_BOOTSTRAP_PASSWORD" },
-      { type: "plain_text", name: "APP_NAME" },
-      { type: "plain_text", name: "APP_VERSION" },
-      { type: "plain_text", name: "PRIMARY_FETCH" },
-      { type: "plain_text", name: "DEFAULT_DOH" },
-      { type: "plain_text", name: "PROXY_FALLBACK_HOSTS" }
-    ],
-    migrations: { tag: "v1", new_sqlite_classes: ["UserState", "PoolState", "RateLimiter"] },
-    observability: { enabled: true }
-  };
-  const form = new FormData();
-  form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
-  form.set("index.js", new Blob([workerJs], { type: "application/javascript+module" }), "index.js");
-  const up = await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName, {
-    method: "PUT",
-    headers: { Authorization: "Bearer " + token },
-    body: form
-  });
-  const uj = await up.json();
-  if (!uj.success)
-    throw new Error("\u0622\u067E\u0644\u0648\u062F \u0633\u0648\u0631\u0633 \u062C\u062F\u06CC\u062F \u0646\u0627\u0645\u0648\u0641\u0642: " + (uj.errors?.[0]?.message || ""));
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ queue_name: queueName, settings: { batch_size: 100, max_retries: 3, max_concurrency: 5 } })
-  }).catch(() => {
-  });
-  await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/schedules", {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({ schedules: [{ cron: "* * * * *" }, { cron: "*/5 * * * *" }, { cron: "0 * * * *" }] })
-  }).catch(() => {
-  });
-  const url = "https://" + workerName + "." + subdomain + ".workers.dev";
-  return { ok: true, workerName, url };
-}
-async function ensureAccountSubdomain(api2, headers, accountId, token) {
-  try {
-    const sd = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", { headers });
-    const sdj = await sd.json();
-    if (sdj.success && sdj.result?.subdomain)
-      return sdj.result.subdomain;
-  } catch {
-  }
-  const candidate = "nikzad-" + randomSuffix(6);
-  const r = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", {
-    method: "PUT",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ subdomain: candidate })
-  });
-  const j = await r.json();
-  if (j.success && j.result?.subdomain)
-    return j.result.subdomain;
-  const fallback = "nikzad-" + randomSuffix(8);
-  const r2 = await fetch(api2 + "/accounts/" + accountId + "/workers/subdomain", {
-    method: "PUT",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ subdomain: fallback })
-  });
-  const j2 = await r2.json();
-  if (j2.success && j2.result?.subdomain)
-    return j2.result.subdomain;
-  console.warn("could not create workers.dev subdomain:", j2.errors?.[0]?.message);
-  return accountId.slice(0, 12);
-}
-async function ensureD1(api2, headers, accountId, name = "aether") {
-  const list = await fetch(api2 + "/accounts/" + accountId + "/d1/database?name=" + encodeURIComponent(name), { headers });
-  const lj = await list.json();
-  const existing = lj.result?.find((d) => d.name === name);
-  if (existing)
-    return existing.uuid;
-  const create = await fetch(api2 + "/accounts/" + accountId + "/d1/database", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name })
-  });
-  const cj = await create.json();
-  if (!cj.success || !cj.result)
-    throw new Error("\u0633\u0627\u062E\u062A D1 \u0646\u0627\u0645\u0648\u0641\u0642: " + (cj.errors?.[0]?.message || ""));
-  return cj.result.uuid;
-}
-async function ensureKv(api2, headers, accountId, title = "aether-kv") {
-  const list = await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces?per_page=100", { headers });
-  const lj = await list.json();
-  const existing = (lj.result || []).find((n) => n.title === title);
-  if (existing)
-    return existing.id;
-  const create = await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ title })
-  });
-  const cj = await create.json();
-  if (!cj.success || !cj.result)
-    throw new Error("\u0633\u0627\u062E\u062A KV \u0646\u0627\u0645\u0648\u0641\u0642: " + (cj.errors?.[0]?.message || ""));
-  return cj.result.id;
-}
-async function ensureQueue(api2, headers, accountId, name = "aether-writes") {
-  const list = await fetch(api2 + "/accounts/" + accountId + "/queues", { headers });
-  const lj = await list.json();
-  if ((lj.result || []).some((q) => q.queue_name === name))
-    return;
-  await fetch(api2 + "/accounts/" + accountId + "/queues", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ queue_name: name })
-  });
-}
-async function applyD1Schema(api2, headers, accountId, d1Id) {
-  const res = await fetch(SCHEMA_URL + "?v=" + Date.now());
-  if (!res.ok)
-    return;
-  let sql = await res.text();
-  sql = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
-  const stmts = sql.split(/;(?:\s|\n|$)/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.startsWith("PRAGMA"));
-  if (stmts.length === 0)
-    return;
-  try {
-    const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ sql: stmts.join(";\n") + ";" })
-    });
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      if (!/already exists|duplicate/i.test(body)) {
-        console.warn("D1 schema batch failed, falling back to per-statement:", body.slice(0, 300));
-        for (const stmt of stmts) {
-          try {
-            await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
-              method: "POST",
-              headers,
-              body: JSON.stringify({ sql: stmt })
-            });
-          } catch (e) {
-            console.warn("D1 schema stmt failed:", e.message);
-          }
-        }
-      }
-    } else {
-      const j = await r.json();
-      if (j.errors?.length) {
-        const realErr = j.errors.find((e) => !/already exists|duplicate/i.test(e.message));
-        if (realErr)
-          console.warn("D1 schema error:", realErr.message);
-      }
-      if (Array.isArray(j.result)) {
-        j.result.forEach((rr, i) => {
-          if (rr && rr.success === false && rr.error && !/already exists|duplicate/i.test(rr.error)) {
-            console.warn("D1 stmt[" + i + "] failed:", rr.error, stmts[i]?.slice(0, 80));
-          }
-        });
-      }
-    }
-  } catch (e) {
-    console.warn("D1 schema fetch error:", e.message);
-  }
-}
-function randomSuffix(n) {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let out = "";
-  const arr = new Uint8Array(n);
-  crypto.getRandomValues(arr);
-  for (let i = 0; i < n; i++)
-    out += chars[arr[i] % chars.length];
-  return out;
-}
-function randomHex(n) {
-  const arr = new Uint8Array(n);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-function randomReadablePassword() {
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const lower = "abcdefghijkmnpqrstuvwxyz";
-  const digit = "23456789";
-  const all = upper + lower + digit;
-  const out = [];
-  const a = new Uint8Array(12);
-  crypto.getRandomValues(a);
-  out.push(upper[a[0] % upper.length]);
-  out.push(lower[a[1] % lower.length]);
-  out.push(digit[a[2] % digit.length]);
-  for (let i = 3; i < 12; i++)
-    out.push(all[a[i] % all.length]);
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = a[i] % (i + 1);
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out.join("");
-}
 
 // src/telegram/bot.ts
 var HOME_KB = {
@@ -5884,9 +6010,96 @@ function panelHtml(version, bootstrap = false) {
   .empty { text-align:center; padding:50px 20px; color:var(--muted); }
   .empty svg { margin:0 auto 12px; opacity:.4; }
   .kbd { font-family:ui-monospace,monospace; font-size:10px; background:rgba(148,163,184,.1); padding:2px 6px; border-radius:5px; border:1px solid var(--border); }
+
+  /* Update banner */
+  .update-banner { display:none; align-items:center; gap:12px; padding:10px 16px;
+    background:linear-gradient(135deg,rgba(245,158,11,.16),rgba(239,68,68,.14));
+    border-bottom:1px solid rgba(245,158,11,.35); color:#fde68a; font-size:13px; }
+  .update-banner.show { display:flex; animation:slideDown .3s ease; }
+  @keyframes slideDown { from { transform:translateY(-100%); } to { transform:none; } }
+  .update-banner .ic { width:30px; height:30px; border-radius:10px; display:grid; place-items:center;
+    background:rgba(245,158,11,.2); color:#fbbf24; flex-shrink:0; }
+  .update-banner .spinner { width:14px; height:14px; border:2px solid rgba(251,191,36,.25); border-top-color:#fbbf24;
+    border-radius:50%; animation:spin .8s linear infinite; display:none; }
+  .update-banner.busy .spinner { display:inline-block; }
+  .update-banner.busy .btn { opacity:.6; pointer-events:none; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .update-banner .msg { flex:1; min-width:0; }
+  .update-banner .msg b { color:#fcd34d; }
+
+  /* Country flag chips */
+  .flag { font-size:16px; line-height:1; margin-left:6px; }
+
+  /* Proxy row ping */
+  .ping-cell { display:inline-flex; align-items:center; gap:6px; font-weight:700; font-family:ui-monospace,monospace; font-size:12px; }
+  .ping-dot { width:8px; height:8px; border-radius:50%; }
+  .ping-good { color:#34d399; } .ping-good .ping-dot { background:#10b981; box-shadow:0 0 8px #10b981; }
+  .ping-mid  { color:#fbbf24; } .ping-mid  .ping-dot { background:#f59e0b; box-shadow:0 0 8px #f59e0b; }
+  .ping-bad  { color:#fb7185; } .ping-bad  .ping-dot { background:#f43f5e; }
+  .ping-idle { color:#64748b; } .ping-idle .ping-dot { background:#475569; }
+  .ping-probing { color:#67e8f9; }
+  .ping-probing .ping-dot { background:#22d3ee; animation:pulsePing 1s ease-in-out infinite; }
+  @keyframes pulsePing { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.4)} }
+
+  /* Smart scanner */
+  .scan-step { display:flex; align-items:center; gap:10px; padding:14px 16px; border-radius:14px;
+    background:rgba(148,163,184,.04); border:1px solid var(--border); margin-bottom:10px; transition:.2s; cursor:pointer; }
+  .scan-step:hover { background:rgba(34,211,238,.05); border-color:rgba(34,211,238,.2); }
+  .scan-step.active { background:linear-gradient(135deg,rgba(34,211,238,.1),rgba(14,165,233,.05));
+    border-color:rgba(34,211,238,.4); box-shadow:0 0 0 3px rgba(34,211,238,.08); }
+  .scan-step .num { width:32px; height:32px; border-radius:10px; display:grid; place-items:center;
+    font-weight:800; font-size:14px; background:rgba(148,163,184,.1); color:#94a3b8; flex-shrink:0; }
+  .scan-step.active .num { background:linear-gradient(135deg,#22d3ee,#0ea5e9); color:#00131c; }
+  .scan-step .body { flex:1; min-width:0; }
+  .scan-step .title { font-weight:700; font-size:14px; }
+  .scan-step .desc { font-size:11px; color:var(--muted); margin-top:2px; }
+
+  /* Skeleton shimmer */
+  .shimmer { background:linear-gradient(90deg,rgba(148,163,184,.05) 0%,rgba(148,163,184,.15) 50%,rgba(148,163,184,.05) 100%);
+    background-size:200% 100%; animation:shimmer 1.5s infinite; border-radius:6px; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+  /* Fade in rows */
+  .row-in { animation:rowIn .35s ease both; }
+  @keyframes rowIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+  /* Glow pulse on action buttons */
+  .btn-glow { position:relative; overflow:hidden; }
+  .btn-glow::after { content:''; position:absolute; inset:0;
+    background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.25) 50%,transparent 70%);
+    transform:translateX(-100%); animation:sheen 3s infinite; }
+  @keyframes sheen { 0%,60%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+  /* Update icon in topbar (animated when update available) */
+  .update-pill { position:relative; cursor:pointer; padding:8px; border-radius:10px; transition:.15s;
+    color:#94a3b8; background:transparent; border:none; }
+  .update-pill:hover { background:rgba(148,163,184,.08); color:#e5e7eb; }
+  .update-pill.available { color:#fbbf24; animation:wobble 2.2s ease-in-out infinite; }
+  @keyframes wobble { 0%,100%{transform:rotate(0)} 15%{transform:rotate(-18deg)} 30%{transform:rotate(14deg)} 45%{transform:rotate(-8deg)} 60%{transform:rotate(4deg)} 75%{transform:rotate(0)} }
+  .update-pill .badge-dot { position:absolute; top:4px; right:4px; width:8px; height:8px; border-radius:50%;
+    background:#f43f5e; box-shadow:0 0 0 0 rgba(244,63,94,.6); animation:pulseDot 1.6s infinite; }
+  @keyframes pulseDot { 0%{box-shadow:0 0 0 0 rgba(244,63,94,.6)} 70%{box-shadow:0 0 0 8px rgba(244,63,94,0)} 100%{box-shadow:0 0 0 0 rgba(244,63,94,0)} }
 </style>
 </head>
 <body>
+
+<!-- ===== Update banner ===== -->
+<div id="update-banner" class="update-banner">
+  <div class="ic">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+      <path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+    </svg>
+  </div>
+  <div class="msg">
+    <b>\u0646\u0633\u062E\u0647\u200C\u06CC \u062C\u062F\u06CC\u062F \u067E\u0646\u0644 \u0622\u0645\u0627\u062F\u0647 \u0627\u0633\u062A!</b>
+    <span id="update-note" class="text-slate-300 text-xs block"></span>
+  </div>
+  <span class="spinner"></span>
+  <button id="btn-update-now" class="btn btn-amber btn-glow" style="padding:8px 16px;font-size:12px">\u0647\u0645\u06CC\u0646 \u062D\u0627\u0644\u0627 \u0622\u067E\u062F\u06CC\u062A \u06A9\u0646</button>
+  <button id="btn-update-dismiss" class="btn btn-icon btn-ghost" title="\u0628\u0639\u062F\u0627\u064B" style="width:30px;height:30px">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
+</div>
 
 <!-- ===== BOOTSTRAP (first admin) ===== -->
 <div id="bootstrap" class="min-h-screen grid place-items-center p-4" style="display:none">
@@ -5942,6 +6155,12 @@ function panelHtml(version, bootstrap = false) {
         <button id="btn-new" class="btn btn-primary" title="\u06A9\u0627\u0631\u0628\u0631 \u062C\u062F\u06CC\u062F">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           <span class="hidden sm:inline">\u06A9\u0627\u0631\u0628\u0631 \u062C\u062F\u06CC\u062F</span>
+        </button>
+        <button id="btn-update-pill" class="update-pill" title="\u0628\u0631\u0631\u0633\u06CC \u0622\u067E\u062F\u06CC\u062A">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+          </svg>
+          <span class="badge-dot" style="display:none"></span>
         </button>
         <div class="me-chip" title="\u062E\u0631\u0648\u062C">
           <div class="avatar" id="me-avatar" style="background:linear-gradient(135deg,#22d3ee,#0ea5e9)">A</div>
@@ -6039,16 +6258,16 @@ function panelHtml(version, bootstrap = false) {
     <!-- PROXIES -->
     <section data-page="proxies" style="display:none">
       <div class="glass rounded-2xl p-5 mb-4">
-        <h2 class="font-bold mb-1">\u0627\u0641\u0632\u0648\u062F\u0646 \u067E\u0631\u0648\u06A9\u0633\u06CC</h2>
+        <h2 class="font-bold mb-1">\u0627\u0633\u062A\u062E\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC</h2>
         <p class="text-xs text-slate-400 mb-4">\u06CC\u06A9 URL \u0641\u0627\u06CC\u0644 \u0645\u062A\u0646\u06CC \u0644\u06CC\u0633\u062A \u067E\u0631\u0648\u06A9\u0633\u06CC \u0648\u0627\u0631\u062F \u06A9\u0646 (\u0647\u0631 \u062E\u0637 socks5://user:pass@host:port \u06CC\u0627 host:port)</p>
         <div class="flex flex-wrap gap-2">
           <input id="proxy-url" class="input flex-1 min-w-[200px]" placeholder="https://example.com/proxy/US.txt"/>
           <input id="proxy-cc" class="input" style="max-width:120px" placeholder="\u06A9\u062F \u06A9\u0634\u0648\u0631 (US)"/>
           <button id="proxy-import" class="btn btn-primary">\u0627\u06CC\u0645\u067E\u0648\u0631\u062A</button>
-          <button id="proxy-health" class="btn btn-ghost">\u0628\u0631\u0631\u0633\u06CC \u0633\u0644\u0627\u0645\u062A</button>
+          <button id="proxy-browser-ping" class="btn btn-violet btn-glow">\u{1F4E1} \u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631</button>
           <button id="proxy-reload" class="btn btn-ghost">\u0647\u0645\u06AF\u0627\u0645\u200C\u0633\u0627\u0632\u06CC DO</button>
         </div>
-        <p class="text-xs text-slate-500 mt-2">\u0628\u0639\u062F \u0627\u0632 \u0627\u06CC\u0645\u067E\u0648\u0631\u062A\u060C \u062F\u0631 \u0648\u06CC\u0631\u0627\u06CC\u0634 \u06A9\u0627\u0631\u0628\u0631 \u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC \xAB\u06A9\u062F \u06A9\u0634\u0648\u0631 \u0627\u0633\u062A\u062E\u0631\xBB \u0631\u0627 \u0633\u062A \u06A9\u0646\u06CC \u062A\u0627 \u0628\u0647\u200C\u0635\u0648\u0631\u062A \u062A\u0635\u0627\u062F\u0641\u06CC \u0627\u0632 \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627\u06CC \u0633\u0627\u0644\u0645 \u0622\u0646 \u06A9\u0634\u0648\u0631 \u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u0634\u0648\u062F.</p>
+        <p class="text-xs text-slate-500 mt-2">\u062F\u06A9\u0645\u0647 \xAB\u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631\xBB \u0627\u0632 \u0647\u0645\u06CC\u0646 \u0627\u06CC\u0646\u062A\u0631\u0646\u062A \u062A\u0648 \u0628\u0647 \u0647\u0645\u0647 \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627 \u0648\u0635\u0644 \u0645\u06CC\u200C\u0634\u0647 \u0648 \u062A\u0623\u062E\u06CC\u0631 \u0648\u0627\u0642\u0639\u06CC \u0631\u0627 \u0646\u0634\u0648\u0646 \u0645\u06CC\u200C\u062F\u0647. \u062F\u0631 \u0648\u06CC\u0631\u0627\u06CC\u0634 \u06A9\u0627\u0631\u0628\u0631 \u0645\u06CC\u200C\u062A\u0648\u0646\u06CC \u067E\u0631\u0648\u06A9\u0633\u06CC \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u0628\u062F\u06CC \u06CC\u0627 \u06A9\u062F \u06A9\u0634\u0648\u0631 \u0627\u0633\u062A\u062E\u0631 \u0631\u0627 \u0633\u062A \u06A9\u0646\u06CC.</p>
       </div>
       <div class="glass rounded-2xl overflow-hidden">
         <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
@@ -6061,10 +6280,17 @@ function panelHtml(version, bootstrap = false) {
 
     <!-- SCANNER -->
     <section data-page="scanner" style="display:none">
-      <div class="flex gap-2 mb-4">
-        <div class="tab active" data-scantab="ip">\u{1F310} \u0627\u0633\u06A9\u0646\u0631 IP</div>
-        <div class="tab" data-scantab="proxy">\u{1F6E1} \u0627\u0633\u06A9\u0646\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
+      <div class="glass rounded-2xl p-4 mb-4">
+        <h2 class="font-bold flex items-center gap-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#67e8f9" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/><path d="M12 7v5l3 2"/></svg>
+          \u0627\u0633\u06A9\u0646\u0631 \u0647\u0648\u0634\u0645\u0646\u062F
+        </h2>
+        <p class="text-xs text-slate-400 mt-1">IP\u0647\u0627\u06CC \u06A9\u0644\u0648\u062F\u0641\u0644\u0631 \u0648 \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627 \u0631\u0627 \u0645\u0633\u062A\u0642\u06CC\u0645 \u0627\u0632 \u0647\u0645\u06CC\u0646 \u0645\u0631\u0648\u0631\u06AF\u0631 \u062A\u0633\u062A \u06A9\u0646 \u2014 \u067E\u06CC\u0646\u06AF \u0648\u0627\u0642\u0639\u06CC \u0627\u06CC\u0646\u062A\u0631\u0646\u062A \u062A\u0648.</p>
+      </div>
+      <div class="flex gap-2 mb-4 flex-wrap">
+        <div class="tab active" data-scantab="ip">\u{1F310} \u0627\u0633\u06A9\u0646 IP \u062A\u0645\u06CC\u0632</div>
         <div class="tab" data-scantab="finder">\u2728 \u06CC\u0627\u0628\u0646\u062F\u0647 \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
+        <div class="tab" data-scantab="proxy">\u{1F6E1} \u062A\u0633\u062A \u062F\u0633\u062A\u06CC \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
       </div>
 
       <div data-scanpane="ip">
@@ -6133,8 +6359,9 @@ function panelHtml(version, bootstrap = false) {
               <option value="socks5">\u0641\u0642\u0637 SOCKS5</option>
               <option value="http">\u0641\u0642\u0637 HTTP</option>
             </select>
-            <input id="finder-max" class="input" type="number" min="20" max="400" value="150" style="max-width:140px" placeholder="\u062D\u062F\u0627\u06A9\u062B\u0631"/>
+            <input id="finder-max" class="input" type="number" min="20" max="400" value="120" style="max-width:140px" placeholder="\u062D\u062F\u0627\u06A9\u062B\u0631"/>
             <button id="finder-run" class="btn btn-primary">\u{1F50D} \u062C\u0633\u062A\u062C\u0648</button>
+            <button id="finder-ping" class="btn btn-violet btn-glow" disabled>\u{1F4E1} \u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631</button>
             <button id="finder-import" class="btn btn-emerald" disabled>\u2795 \u0627\u0641\u0632\u0648\u062F\u0646 \u0628\u0647 \u0627\u0633\u062A\u062E\u0631</button>
           </div>
           <div id="finder-progress" class="text-xs text-slate-400"></div>
@@ -6144,7 +6371,7 @@ function panelHtml(version, bootstrap = false) {
             <h3 class="font-bold">\u06A9\u0627\u0646\u062F\u06CC\u062F\u0627\u0647\u0627</h3>
             <span id="finder-count" class="text-xs text-slate-400">\u2014</span>
           </div>
-          <div id="finder-results" style="max-height:460px;overflow:auto"></div>
+          <div id="finder-results" style="max-height:500px;overflow:auto"></div>
         </div>
       </div>
     </section>
@@ -6275,9 +6502,31 @@ function panelHtml(version, bootstrap = false) {
         <label class="field" style="grid-column:1/-1"><span>SNI / Host (\u062E\u0627\u0644\u06CC = \u0647\u0627\u0633\u062A \u0648\u0631\u06A9\u0631)</span><input id="f-sniHost" class="input" placeholder="example.com"/></label>
         <label class="field" style="grid-column:1/-1"><span>Fragment \u0645\u062B\u0644 200-3000,1-2,tlshello</span><input id="f-fragment" class="input mono" placeholder="\u0627\u062E\u062A\u06CC\u0627\u0631\u06CC"/></label>
       </div>
-      <div class="section-title">\u0645\u0633\u06CC\u0631\u06CC\u0627\u0628\u06CC \u0648 \u0641\u06CC\u0644\u062A\u0631 \u0645\u062D\u062A\u0648\u0627</div>
+      <div class="section-title">\u067E\u0631\u0648\u06A9\u0633\u06CC \u0628\u0627\u0644\u0627\u062F\u0633\u062A</div>
+      <div class="glass rounded-xl p-3 mb-3" style="background:rgba(34,211,238,.04);border:1px dashed rgba(34,211,238,.25)">
+        <div class="flex items-center gap-2 flex-wrap">
+          <label class="flex items-center gap-2 text-xs cursor-pointer mb-0">
+            <span class="switch" style="width:36px;height:20px"><input type="checkbox" id="f-useProxy"><span class="slider" style="height:20px;width:36px"></span></span>
+            <b>\u0627\u0633\u062A\u0641\u0627\u062F\u0647 \u0627\u0632 \u067E\u0631\u0648\u06A9\u0633\u06CC \u0628\u0631\u0627\u06CC \u0627\u06CC\u0646 \u06A9\u0627\u0631\u0628\u0631</b>
+          </label>
+          <button type="button" id="f-proxyFinder" class="btn btn-ghost" style="padding:6px 12px;font-size:11px;margin-right:auto">\u2728 \u06CC\u0627\u0641\u062A\u0646 \u067E\u0631\u0648\u06A9\u0633\u06CC</button>
+        </div>
+        <div id="f-proxyPicker" style="display:none;margin-top:12px">
+          <div class="flex gap-2 flex-wrap mb-2">
+            <select id="f-finder-scheme" class="input" style="max-width:160px;padding:8px 10px;font-size:12px">
+              <option value="both">SOCKS5 + HTTP</option>
+              <option value="socks5">\u0641\u0642\u0637 SOCKS5</option>
+              <option value="http">\u0641\u0642\u0637 HTTP</option>
+            </select>
+            <button type="button" id="f-finder-scan" class="btn btn-primary" style="padding:7px 14px;font-size:12px">\u{1F50D} \u062C\u0633\u062A\u062C\u0648 \u0648 \u067E\u06CC\u0646\u06AF</button>
+            <button type="button" id="f-finder-pool" class="btn btn-ghost" style="padding:7px 14px;font-size:12px">\u0627\u0632 \u0627\u0633\u062A\u062E\u0631</button>
+            <span id="f-finder-progress" class="text-xs text-slate-400 self-center"></span>
+          </div>
+          <div id="f-finder-results" style="max-height:240px;overflow:auto;border-radius:10px;border:1px solid var(--border)"></div>
+        </div>
+      </div>
       <div class="grid2">
-        <label class="field"><span>\u06A9\u062F \u06A9\u0634\u0648\u0631 \u0627\u0633\u062A\u062E\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC (\u0645\u062B\u0644 US)</span><input id="f-userProxyIata" class="input mono" placeholder="\u0627\u062E\u062A\u06CC\u0627\u0631\u06CC"/></label>
+        <label class="field"><span>\u06A9\u062F \u06A9\u0634\u0648\u0631 \u0627\u0633\u062A\u062E\u0631 (\u0645\u062B\u0644 US \u2014 \u0627\u06AF\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC \u062F\u0633\u062A\u06CC \u0633\u062A \u0646\u06A9\u0646\u06CC)</span><input id="f-userProxyIata" class="input mono" placeholder="\u0627\u062E\u062A\u06CC\u0627\u0631\u06CC"/></label>
         <label class="field"><span>\u067E\u0631\u0648\u06A9\u0633\u06CC \u0628\u0627\u0644\u0627\u062F\u0633\u062A \u062F\u0633\u062A\u06CC</span><input id="f-userSocks5" class="input mono" placeholder="socks5://u:p@host:port"/></label>
         <label class="field" style="grid-column:1/-1"><span>\u062F\u0627\u0645\u0646\u0647\u200C\u0647\u0627\u06CC \u0645\u0633\u062A\u0642\u06CC\u0645 (\u0628\u0627 \u06A9\u0627\u0645\u0627)</span><input id="f-routeDirect" class="input" placeholder="example.ir, domain.com"/></label>
         <label class="field" style="grid-column:1/-1"><span>\u062F\u0627\u0645\u0646\u0647\u200C\u0647\u0627\u06CC \u0645\u0633\u062F\u0648\u062F (\u0628\u0627 \u06A9\u0627\u0645\u0627)</span><input id="f-routeBlock" class="input" placeholder="ads.example.com"/></label>
@@ -6657,7 +6906,13 @@ function openUserModal(username){
   document.getElementById('f-sniHost').value = u ? (u.sni_host || '') : '';
   document.getElementById('f-fragment').value = u ? (u.fragment || '') : '';
   document.getElementById('f-userProxyIata').value = u ? (u.user_proxy_iata || '') : '';
-  document.getElementById('f-userSocks5').value = u ? (u.user_socks5 || '') : '';
+  var socksVal = u ? (u.user_socks5 || '') : '';
+  document.getElementById('f-userSocks5').value = socksVal;
+  var useProxy = document.getElementById('f-useProxy');
+  useProxy.checked = !!socksVal;
+  document.getElementById('f-proxyPicker').style.display = socksVal ? '' : 'none';
+  document.getElementById('f-finder-results').innerHTML = '';
+  document.getElementById('f-finder-progress').textContent = '';
   document.getElementById('f-routeDirect').value = u ? parseList(u.route_direct) : '';
   document.getElementById('f-routeBlock').value = u ? parseList(u.route_block) : '';
   document.getElementById('f-dohUrl').value = u ? (u.doh_url || '') : '';
@@ -6686,7 +6941,7 @@ document.getElementById('mu-save').addEventListener('click', async function(){
     sniHost: document.getElementById('f-sniHost').value.trim() || null,
     fragment: document.getElementById('f-fragment').value.trim() || null,
     userProxyIata: document.getElementById('f-userProxyIata').value.trim().toUpperCase() || null,
-    userSocks5: document.getElementById('f-userSocks5').value.trim() || null,
+    userSocks5: document.getElementById('f-useProxy').checked ? (document.getElementById('f-userSocks5').value.trim() || null) : null,
     routeDirect: csvList(document.getElementById('f-routeDirect').value),
     routeBlock: csvList(document.getElementById('f-routeBlock').value),
     dohUrl: document.getElementById('f-dohUrl').value.trim() || null,
@@ -6710,6 +6965,105 @@ document.getElementById('mu-save').addEventListener('click', async function(){
     loadUsers(); loadStats();
   } catch(e){ toast(e.message, 'error'); }
   btn.disabled = false; btn.textContent = '\u0630\u062E\u06CC\u0631\u0647 \u06A9\u0627\u0631\u0628\u0631';
+});
+
+/* ---------- in-modal proxy finder ---------- */
+var _modalFinderCandidates = [];
+document.getElementById('f-useProxy').addEventListener('change', function(){
+  document.getElementById('f-proxyPicker').style.display = this.checked ? '' : 'none';
+  if (!this.checked) document.getElementById('f-userSocks5').value = '';
+});
+document.getElementById('f-proxyFinder').addEventListener('click', function(){
+  var cb = document.getElementById('f-useProxy');
+  cb.checked = true;
+  cb.dispatchEvent(new Event('change'));
+});
+function setModalProxy(uri){
+  document.getElementById('f-userSocks5').value = uri;
+  toast('\u067E\u0631\u0648\u06A9\u0633\u06CC \u0627\u0646\u062A\u062E\u0627\u0628 \u0634\u062F: ' + uri.slice(0, 40) + (uri.length > 40 ? '\u2026' : ''));
+  // highlight selected row
+  document.querySelectorAll('[data-modal-uri]').forEach(function(el){
+    el.style.background = el.dataset.modalUri === uri ? 'rgba(16,185,129,.12)' : '';
+  });
+}
+async function modalFinderScan(){
+  var scheme = document.getElementById('f-finder-scheme').value;
+  var btn = document.getElementById('f-finder-scan');
+  var prog = document.getElementById('f-finder-progress');
+  var out = document.getElementById('f-finder-results');
+  btn.disabled = true; btn.textContent = '\u{1F50D} \u062C\u0633\u062A\u062C\u0648...';
+  prog.textContent = '\u062F\u0627\u0646\u0644\u0648\u062F \u0644\u06CC\u0633\u062A\u200C\u0647\u0627...';
+  try {
+    var body = { maxTotal: 60, maxPerSource: 15 };
+    if (scheme === 'socks5') body.schemes = ['socks5'];
+    if (scheme === 'http') body.schemes = ['http'];
+    var r = await API.post('/api/scanner/finder/run', body);
+    prog.textContent = r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F \u2014 \u062F\u0631 \u062D\u0627\u0644 \u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631 \u0634\u0645\u0627...';
+    _modalFinderCandidates = r.candidates || [];
+    // Render with probing state
+    renderModalFinderRows(_modalFinderCandidates.map(function(c){return {uri:c.uri,source:c.source,scheme:c.scheme,state:'probing'};}));
+    var hosts = _modalFinderCandidates.map(function(c){ try { return new URL(c.uri).hostname; } catch(e){ return ''; } }).filter(Boolean);
+    var geo = {};
+    try { var g = await API.post('/api/proxies/geoip',{hosts:hosts}); geo = g.results||{}; } catch(e){}
+    var items = _modalFinderCandidates.map(function(c){
+      var cc = '';
+      try { var h = new URL(c.uri).hostname; if (geo[h]&&geo[h].countryCode) cc = geo[h].countryCode; } catch(e){}
+      return { uri: c.uri, source: c.source, scheme: c.scheme, country: cc, state: 'probing' };
+    });
+    var done = 0;
+    await browserPingProxies(items, 8, 3000, function(_d, res){
+      done++;
+      var item = items.find(function(x){return x.uri === res.uri;});
+      if (item) { item.state = res.ok ? 'ok' : 'dead'; item.latencyMs = res.latencyMs; }
+      if (done % 3 === 0 || done === items.length) renderModalFinderRows(items);
+      prog.textContent = done + '/' + items.length + ' \u062A\u0633\u062A \u0634\u062F';
+    });
+    var ok = items.filter(function(x){return x.state==='ok';}).sort(function(a,b){return (a.latencyMs||9999)-(b.latencyMs||9999);});
+    prog.innerHTML = '<span class="text-emerald-400">\u2705 ' + ok.length + ' \u0633\u0627\u0644\u0645</span> \u0627\u0632 ' + items.length;
+    btn.disabled = false; btn.textContent = '\u{1F50D} \u062C\u0633\u062A\u062C\u0648 \u0648 \u067E\u06CC\u0646\u06AF';
+  } catch(e){
+    prog.innerHTML = '<span class="text-rose-400">\u062E\u0637\u0627: ' + esc(e.message) + '</span>';
+    btn.disabled = false; btn.textContent = '\u{1F50D} \u062C\u0633\u062A\u062C\u0648 \u0648 \u067E\u06CC\u0646\u06AF';
+  }
+}
+function renderModalFinderRows(items){
+  var out = document.getElementById('f-finder-results');
+  if (!items.length) { out.innerHTML = '<div class="empty" style="padding:20px">\u0686\u06CC\u0632\u06CC \u0646\u06CC\u0633\u062A</div>'; return; }
+  var html = '<table style="width:100%"><tbody>';
+  items.forEach(function(it, i){
+    var flag = it.country ? '<span class="flag">' + flagEmoji(it.country) + '</span>' : '';
+    var p;
+    if (it.state === 'probing') p = pingCell(null,'probing');
+    else if (it.state === 'dead') p = pingCell(null,'dead');
+    else p = pingCell(it.latencyMs, null);
+    var schemeChip = it.scheme === 'socks5' ? '<span class="chip chip-violet">S5</span>' : '<span class="chip chip-cyan">H</span>';
+    var ccChip = it.country ? '<span class="chip chip-slate">' + flag + esc(it.country) + '</span>' : '';
+    html += '<tr data-modal-uri="' + esc(it.uri) + '" style="opacity:' + (it.state==='dead'?0.45:1) + '">' +
+      '<td style="padding:8px 10px"><div class="mono text-[11px]" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(it.uri) + '">' + esc(it.uri) + '</div>' +
+      '<div class="text-[10px] text-slate-500">' + esc(it.source||'') + '</div></td>' +
+      '<td style="padding:8px 6px;white-space:nowrap">' + schemeChip + ccChip + '</td>' +
+      '<td style="padding:8px 10px;white-space:nowrap">' + p + '</td>' +
+      '<td style="padding:8px 10px"><button type="button" class="btn btn-emerald" style="padding:5px 10px;font-size:11px" data-set-uri="' + esc(it.uri) + '"' + (it.state==='dead'?' disabled':'') + '>\u0633\u062A</button></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  out.innerHTML = html;
+  out.querySelectorAll('[data-set-uri]').forEach(function(b){
+    b.addEventListener('click', function(){ setModalProxy(b.dataset.setUri); });
+  });
+}
+document.getElementById('f-finder-scan').addEventListener('click', modalFinderScan);
+document.getElementById('f-finder-pool').addEventListener('click', async function(){
+  var btn = this; btn.disabled = true;
+  try {
+    var r = await API.get('/api/proxies?pageSize=80');
+    var items = (r.proxies||[]).filter(function(p){return p.is_active;}).map(function(p){
+      return { uri: p.uri, source: 'pool', scheme: p.uri.indexOf('socks')===0?'socks5':'http', country: (p.country||'').toUpperCase(), state:'ok', latencyMs: p.latency_ms };
+    });
+    renderModalFinderRows(items);
+    document.getElementById('f-finder-progress').textContent = items.length + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u0627\u0632 \u0627\u0633\u062A\u062E\u0631';
+  } catch(e){ toast(e.message,'error'); }
+  btn.disabled = false;
 });
 
 /* ---------- sub modal ---------- */
@@ -6747,32 +7101,111 @@ document.getElementById('sub-copy').addEventListener('click', function(){
 });
 
 /* ---------- proxies ---------- */
+var _proxiesCache = [];
 async function loadProxies(){
   try {
-    var r = await API.get('/api/proxies?pageSize=100');
+    var r = await API.get('/api/proxies?pageSize=200');
+    _proxiesCache = r.proxies || [];
     document.getElementById('proxy-count').textContent = fmtNum(r.total) + ' \u067E\u0631\u0648\u06A9\u0633\u06CC';
-    var ps = r.proxies || [];
-    if (!ps.length) {
+    if (!_proxiesCache.length) {
       document.getElementById('proxies-table').innerHTML = '<div class="empty">\u0647\u0646\u0648\u0632 \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0627\u06CC \u0627\u0636\u0627\u0641\u0647 \u0646\u0634\u062F\u0647</div>';
       return;
     }
-    document.getElementById('proxies-table').innerHTML =
-      '<table><thead><tr><th>URI</th><th>\u06A9\u0634\u0648\u0631</th><th>Latency</th><th>\u0648\u0636\u0639\u06CC\u062A</th><th></th></tr></thead><tbody>' +
-      ps.map(function(p){
-        return '<tr>' +
-          '<td class="mono text-[11px]" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
-          '<td><span class="chip chip-cyan">' + esc((p.country||'\u2014').toUpperCase()) + '</span></td>' +
-          '<td class="text-xs text-slate-400">' + (p.latency_ms ? p.latency_ms + 'ms' : '\u2014') + '</td>' +
-          '<td>' + (p.is_active ? '<span class="chip chip-green">\u0641\u0639\u0627\u0644</span>' : '<span class="chip chip-red">\u063A\u06CC\u0631\u0641\u0639\u0627\u0644</span>') + '</td>' +
-          '<td><button class="btn btn-ghost btn-icon" data-pid="' + p.id + '" title="\u062D\u0630\u0641"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button></td>' +
-        '</tr>';
-      }).join('') + '</tbody></table>';
-    document.querySelectorAll('[data-pid]').forEach(function(b){
-      b.addEventListener('click', function(){
-        API.del('/api/proxies/' + b.dataset.pid).then(function(){ toast('\u062D\u0630\u0641 \u0634\u062F'); loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
-      });
-    });
+    renderProxiesTable();
   } catch(e){ document.getElementById('proxies-table').innerHTML = '<div class="empty text-rose-400">' + esc(e.message) + '</div>'; }
+}
+function renderProxiesTable(probeState){
+  // probeState: map uri -> 'probing'|'dead'|{latencyMs}
+  probeState = probeState || {};
+  var ps = _proxiesCache.slice().sort(function(a,b){
+    // Sort alive (with latency) first, then by latency ascending, dead last
+    var la = a.latency_ms || 99999, lb = b.latency_ms || 99999;
+    if (a.is_active !== b.is_active) return b.is_active - a.is_active;
+    return la - lb;
+  });
+  var html = '<table><thead><tr><th style="width:32px"></th><th>\u067E\u0631\u0648\u06A9\u0633\u06CC</th><th>\u06A9\u0634\u0648\u0631</th><th>\u067E\u06CC\u0646\u06AF</th><th>\u0633\u0644\u0627\u0645\u062A</th><th></th></tr></thead><tbody>';
+  ps.forEach(function(p, idx){
+    var cc = (p.country||'').toUpperCase();
+    var flag = cc && cc !== 'XX' ? '<span class="flag">' + flagEmoji(cc) + '</span>' : '';
+    var host; try { host = new URL(p.uri).hostname; } catch(e){ host = p.uri; }
+    var st = probeState[p.uri];
+    var pingHtml;
+    if (st === 'probing') pingHtml = pingCell(null, 'probing');
+    else if (st === 'dead') pingHtml = pingCell(null, 'dead');
+    else if (st && st.latencyMs != null) pingHtml = pingCell(st.latencyMs, null);
+    else pingHtml = pingCell(p.latency_ms, null);
+    var rate = p.success_rate == null ? 100 : p.success_rate;
+    var rateChip = rate >= 80 ? 'chip-green' : rate >= 40 ? 'chip-amber' : 'chip-red';
+    var checked = p.last_checked ? new Date(p.last_checked*1000).toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'}) : '\u2014';
+    html += '<tr class="row-in" style="animation-delay:' + Math.min(idx*10, 400) + 'ms">' +
+      '<td><button class="btn btn-icon btn-ghost" data-toggle="' + p.id + '" title="\u0641\u0639\u0627\u0644/\u063A\u06CC\u0631\u0641\u0639\u0627\u0644" style="width:28px;height:28px;padding:0">' +
+        (p.is_active ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
+                    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2.5"><circle cx="12" cy="12" r="9"/></svg>') +
+      '</button></td>' +
+      '<td><div class="mono text-[11px]" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p.uri) + '">' + esc(p.uri) + '</div>' +
+          '<div class="text-[10px] text-slate-500 mono">' + esc(host) + ' \xB7 ' + esc(checked) + '</div></td>' +
+      '<td>' + (cc ? '<span class="chip chip-cyan">' + flag + esc(cc) + '</span>' : '<span class="chip chip-slate">\u2014</span>') + '</td>' +
+      '<td>' + pingHtml + '</td>' +
+      '<td><span class="chip ' + rateChip + '">' + rate + '%</span></td>' +
+      '<td><button class="btn btn-ghost btn-icon" data-pid="' + p.id + '" title="\u062D\u0630\u0641" style="width:28px;height:28px;padding:0;color:#fb7185"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('proxies-table').innerHTML = html;
+  document.querySelectorAll('[data-pid]').forEach(function(b){
+    b.addEventListener('click', function(){
+      API.del('/api/proxies/' + b.dataset.pid).then(function(){ toast('\u062D\u0630\u0641 \u0634\u062F'); loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
+    });
+  });
+  document.querySelectorAll('[data-toggle]').forEach(function(b){
+    b.addEventListener('click', function(){
+      API.post('/api/proxies/' + b.dataset.toggle + '/toggle', {}).then(function(){ loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
+    });
+  });
+}
+async function browserPingAllProxies(){
+  if (!_proxiesCache.length) return toast('\u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0627\u06CC \u0628\u0631\u0627\u06CC \u062A\u0633\u062A \u0646\u06CC\u0633\u062A', 'error');
+  var btn = document.getElementById('proxy-browser-ping');
+  btn.disabled = true; btn.textContent = '\u{1F4E1} \u062F\u0631 \u062D\u0627\u0644 \u067E\u06CC\u0646\u06AF...';
+  var probeState = {};
+  _proxiesCache.forEach(function(p){ probeState[p.uri] = 'probing'; });
+  renderProxiesTable(probeState);
+  var results = [];
+  var hostList = _proxiesCache.map(function(p){
+    try { return new URL(p.uri).hostname; } catch(e){ return ''; }
+  }).filter(Boolean);
+  var geo = {};
+  try {
+    var g = await API.post('/api/proxies/geoip', { hosts: hostList });
+    geo = g.results || {};
+  } catch(e){}
+  var t0 = Date.now();
+  await browserPingProxies(_proxiesCache, 8, 3500, function(done, res){
+    probeState[res.uri] = res.ok ? { latencyMs: res.latencyMs } : 'dead';
+    if (done % 5 === 0 || done === _proxiesCache.length) renderProxiesTable(probeState);
+    var prog = document.getElementById('proxy-count');
+    if (prog) prog.textContent = '\u067E\u06CC\u0646\u06AF... ' + done + '/' + _proxiesCache.length;
+    results.push(res);
+  });
+  // Save pings + country back to server
+  var ccByUri = {};
+  _proxiesCache.forEach(function(p){
+    try {
+      var h = new URL(p.uri).hostname;
+      var g = geo[h];
+      if (g && g.countryCode) ccByUri[p.uri] = g.countryCode;
+    } catch(e){}
+  });
+  try {
+    await API.post('/api/proxies/bulk-ping', {
+      results: results.map(function(r){
+        return { uri: r.uri, ok: r.ok, latencyMs: r.ok ? r.latencyMs : null, country: ccByUri[r.uri] || null };
+      })
+    });
+  } catch(e){ console.warn('bulk-ping save failed', e); }
+  toast('\u067E\u06CC\u0646\u06AF \u062A\u0645\u0627\u0645 \u0634\u062F \u062F\u0631 ' + ((Date.now()-t0)/1000).toFixed(1) + 's');
+  btn.disabled = false; btn.textContent = '\u{1F4E1} \u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631';
+  loadProxies();
 }
 document.getElementById('proxy-import').addEventListener('click', async function(){
   var url = document.getElementById('proxy-url').value.trim();
@@ -6786,9 +7219,7 @@ document.getElementById('proxy-import').addEventListener('click', async function
   } catch(e){ toast(e.message, 'error'); }
   b.disabled = false; b.textContent = '\u0627\u06CC\u0645\u067E\u0648\u0631\u062A';
 });
-document.getElementById('proxy-health').addEventListener('click', function(){
-  API.post('/api/proxies/health', {}).then(function(){ toast('\u0628\u0631\u0631\u0633\u06CC \u0633\u0644\u0627\u0645\u062A \u0632\u0645\u0627\u0646\u200C\u0628\u0646\u062F\u06CC \u0634\u062F'); }).catch(function(e){ toast(e.message,'error'); });
-});
+document.getElementById('proxy-browser-ping').addEventListener('click', browserPingAllProxies);
 document.getElementById('proxy-reload').addEventListener('click', function(){
   API.post('/api/proxies/pool/reload', {}).then(function(r){ toast(r.active + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u0647\u0645\u06AF\u0627\u0645\u200C\u0633\u0627\u0632\u06CC \u0634\u062F'); }).catch(function(e){ toast(e.message,'error'); });
 });
@@ -6807,22 +7238,28 @@ function initScanner(){
       });
     });
   });
-  document.getElementById('ipscan-preset').addEventListener('click', function(){
+  function loadPresetIps(cb){
     API.get('/api/scanner/preset').then(function(r){
-      document.getElementById('ipscan-list').value = r.ips.join('\\n');
+      document.getElementById('ipscan-list').value = r.ips.join(String.fromCharCode(10));
+      if (cb) cb(r.ips);
     });
-  });
+  }
+  document.getElementById('ipscan-preset').addEventListener('click', function(){ loadPresetIps(); });
+  // Auto-load preset on first visit if empty
+  if (!document.getElementById('ipscan-list').value) loadPresetIps();
   document.getElementById('ipscan-run').addEventListener('click', runIpScan);
   document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
   document.getElementById('pscan-run').addEventListener('click', runProxyScan);
   document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
   document.getElementById('finder-run').addEventListener('click', runFinder);
   document.getElementById('finder-import').addEventListener('click', importFoundProxies);
+  document.getElementById('finder-ping').addEventListener('click', pingFoundProxies);
 }
 var _finderCandidates = [];
+var _finderState = {};   // uri -> {state, latencyMs, country}
 async function runFinder(){
   var scheme = document.getElementById('finder-scheme').value;
-  var max = parseInt(document.getElementById('finder-max').value,10) || 150;
+  var max = parseInt(document.getElementById('finder-max').value,10) || 120;
   var btn = document.getElementById('finder-run');
   btn.disabled = true; btn.textContent = '\u{1F50D} \u062F\u0631 \u062D\u0627\u0644 \u062C\u0633\u062A\u062C\u0648...';
   var prog = document.getElementById('finder-progress');
@@ -6834,23 +7271,79 @@ async function runFinder(){
     if (scheme === 'http') body.schemes = ['http'];
     var r = await API.post('/api/scanner/finder/run', body);
     var elapsed = ((Date.now()-t0)/1000).toFixed(1);
-    var lines = ['\u2705 ' + r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F \u0627\u0632 ' + r.sourcesFetched + ' \u0645\u0646\u0628\u0639 \u062F\u0631 ' + elapsed + 's'];
+    _finderCandidates = r.candidates || [];
+    _finderState = {};
+    _finderCandidates.forEach(function(c){ _finderState[c.uri] = { state:'idle' }; });
+    var lines = ['\u2705 ' + r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F \u0627\u0632 ' + r.sourcesFetched + ' \u0645\u0646\u0628\u0639 \u062F\u0631 ' + elapsed + 's \u2014 \u0628\u0631\u0627\u06CC \u062F\u06CC\u062F\u0646 \u067E\u06CC\u0646\u06AF \u0631\u0648\u06CC \xAB\u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631\xBB \u0628\u0632\u0646.'];
     if (r.sourcesFailed && r.sourcesFailed.length) lines.push('\u26A0\uFE0F ' + r.sourcesFailed.length + ' \u0645\u0646\u0628\u0639 \u0646\u0627\u0645\u0648\u0641\u0642');
     prog.innerHTML = lines.join('<br>');
-    document.getElementById('finder-count').textContent = r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F (\u0622\u0645\u0627\u062F\u0647 \u0627\u06CC\u0645\u067E\u0648\u0631\u062A)';
-    _finderCandidates = r.candidates || [];
-    var rows = _finderCandidates.slice(0, 200).map(function(p, i){
-      return '<tr><td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
-             '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
-             '<td><span class="chip ' + (p.scheme==='socks5'?'chip-violet':'chip-cyan') + '">' + esc(p.scheme.toUpperCase()) + '</span></td>' +
-             '<td><span class="text-slate-400 text-xs">' + esc(p.source||'') + '</span></td></tr>';
-    }).join('');
-    document.getElementById('finder-results').innerHTML =
-      '<table><thead><tr><th>#</th><th>\u067E\u0631\u0648\u06A9\u0633\u06CC</th><th>\u0646\u0648\u0639</th><th>\u0645\u0646\u0628\u0639</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('finder-count').textContent = r.totalCandidates + ' \u06A9\u0627\u0646\u062F\u06CC\u062F';
+    renderFinderRows();
     document.getElementById('finder-import').disabled = _finderCandidates.length === 0;
+    document.getElementById('finder-ping').disabled = _finderCandidates.length === 0;
     toast(_finderCandidates.length + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u067E\u06CC\u062F\u0627 \u0634\u062F');
   } catch(e){ toast(e.message, 'error'); prog.textContent = '\u062E\u0637\u0627: ' + e.message; }
   btn.disabled = false; btn.textContent = '\u{1F50D} \u062C\u0633\u062A\u062C\u0648';
+}
+function renderFinderRows(){
+  var list = _finderCandidates.slice(0, 200);
+  var rows = list.map(function(p, i){
+    var st = _finderState[p.uri] || { state:'idle' };
+    var flag = st.country ? '<span class="flag">' + flagEmoji(st.country) + '</span>' : '';
+    var pingHtml;
+    if (st.state === 'probing') pingHtml = pingCell(null,'probing');
+    else if (st.state === 'dead') pingHtml = pingCell(null,'dead');
+    else if (st.state === 'ok') pingHtml = pingCell(st.latencyMs, null);
+    else pingHtml = pingCell(null, null);
+    var schemeChip = p.scheme === 'socks5' ? 'chip-violet' : 'chip-cyan';
+    return '<tr class="row-in" style="animation-delay:' + Math.min(i*8,400) + 'ms;opacity:' + (st.state==='dead'?0.45:1) + '">' +
+      '<td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
+      '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p.uri) + '">' + esc(p.uri) + '</td>' +
+      '<td><span class="chip ' + schemeChip + '">' + esc(p.scheme.toUpperCase()) + '</span>' +
+          (st.country ? ' <span class="chip chip-slate">' + flag + esc(st.country) + '</span>' : '') + '</td>' +
+      '<td style="white-space:nowrap">' + pingHtml + '</td>' +
+      '<td><button class="btn btn-emerald" style="padding:5px 10px;font-size:11px" data-finder-set="' + esc(p.uri) + '"' + (st.state!=='ok'?' disabled':'') + '>\u0633\u062A \u0628\u0631\u0627\u06CC \u06A9\u0627\u0631\u0628\u0631</button></td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('finder-results').innerHTML =
+    '<table><thead><tr><th>#</th><th>\u067E\u0631\u0648\u06A9\u0633\u06CC</th><th>\u0646\u0648\u0639/\u06A9\u0634\u0648\u0631</th><th>\u067E\u06CC\u0646\u06AF</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  document.querySelectorAll('[data-finder-set]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var uri = b.dataset.finderSet;
+      // Open new-user modal pre-filled with this proxy
+      openUserModal(null);
+      document.getElementById('f-useProxy').checked = true;
+      document.getElementById('f-useProxy').dispatchEvent(new Event('change'));
+      document.getElementById('f-userSocks5').value = uri;
+      toast('\u067E\u0631\u0648\u06A9\u0633\u06CC \u062F\u0631 \u0641\u0631\u0645 \u06A9\u0627\u0631\u0628\u0631 \u062C\u062F\u06CC\u062F \u0633\u062A \u0634\u062F');
+    });
+  });
+}
+async function pingFoundProxies(){
+  if (!_finderCandidates.length) return;
+  var btn = document.getElementById('finder-ping');
+  btn.disabled = true; btn.textContent = '\u{1F4E1} \u062F\u0631 \u062D\u0627\u0644 \u067E\u06CC\u0646\u06AF...';
+  var prog = document.getElementById('finder-progress');
+  // GeoIP
+  var hosts = _finderCandidates.map(function(c){ try { return new URL(c.uri).hostname; } catch(e){ return ''; } }).filter(Boolean);
+  var geo = {};
+  try { var g = await API.post('/api/proxies/geoip', {hosts:hosts.slice(0,100)}); geo = g.results||{}; } catch(e){}
+  _finderCandidates.forEach(function(c){
+    _finderState[c.uri] = { state:'probing' };
+    try { var h = new URL(c.uri).hostname; if (geo[h]&&geo[h].countryCode) _finderState[c.uri].country = geo[h].countryCode; } catch(e){}
+  });
+  renderFinderRows();
+  var done = 0;
+  await browserPingProxies(_finderCandidates, 10, 3000, function(_d, res){
+    done++;
+    _finderState[res.uri] = { state: res.ok ? 'ok' : 'dead', latencyMs: res.ok ? res.latencyMs : null,
+      country: (_finderState[res.uri]||{}).country };
+    if (done % 6 === 0 || done === _finderCandidates.length) renderFinderRows();
+    prog.textContent = '\u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631: ' + done + '/' + _finderCandidates.length;
+  });
+  var ok = _finderCandidates.filter(function(c){ return _finderState[c.uri] && _finderState[c.uri].state === 'ok'; });
+  prog.innerHTML = '<span class="text-emerald-400">\u2705 ' + ok.length + ' \u0633\u0627\u0644\u0645</span> \u0627\u0632 ' + _finderCandidates.length + ' \u2014 \u0645\u06CC\u200C\u062A\u0648\u0646\u06CC \u0628\u0627 \u062F\u06A9\u0645\u0647 \xAB\u0633\u062A \u0628\u0631\u0627\u06CC \u06A9\u0627\u0631\u0628\u0631\xBB \u0645\u0633\u062A\u0642\u06CC\u0645 \u0628\u0647 \u06CC\u06A9 \u06A9\u0627\u0631\u0628\u0631 \u0627\u062E\u062A\u0635\u0627\u0635 \u0628\u062F\u06CC.';
+  btn.disabled = false; btn.textContent = '\u{1F4E1} \u067E\u06CC\u0646\u06AF \u0627\u0632 \u0645\u0631\u0648\u0631\u06AF\u0631';
 }
 async function importFoundProxies(){
   if (!_finderCandidates.length) return;
@@ -6893,10 +7386,16 @@ async function runIpScan(){
     document.getElementById('ipscan-count').textContent = alive.length + ' \u0633\u0627\u0644\u0645 \u0627\u0632 ' + results.length + ' \u062F\u0631 ' + elapsed + 's';
     prog.textContent = '\u2705 ' + alive.length + ' \u067E\u0627\u0633\u062E \u062F\u0627\u062F\u0646\u062F\u060C ' + (results.length-alive.length) + ' \u062E\u0637\u0627 \u062F\u0627\u0634\u062A\u0646\u062F.' + (mode==='browser' ? ' (\u0646\u062A\u0627\u06CC\u062C \u0627\u0632 \u0627\u06CC\u0646\u062A\u0631\u0646\u062A \u0634\u0645\u0627)' : ' (\u0646\u062A\u0627\u06CC\u062C \u0627\u0632 \u0633\u0631\u0648\u0631 \u06A9\u0644\u0648\u062F\u0641\u0644\u0631)');
     _scanAliveIps = sorted.filter(function(x){return x.ok;}).slice(0, 30).map(function(x){return {target:x.target, latencyMs:x.latencyMs};});
-    var rows = sorted.map(function(x){
-      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
-                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
-      return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    var rows = sorted.map(function(x, i){
+      var ms;
+      if (x.ok) {
+        var cls = x.latencyMs < 120 ? 'ping-good' : x.latencyMs < 300 ? 'ping-mid' : 'ping-bad';
+        ms = '<span class="ping-cell ' + cls + '"><span class="ping-dot"></span>' + x.latencyMs + 'ms</span>';
+      } else {
+        ms = '<span class="ping-cell ping-bad"><span class="ping-dot"></span>' + esc(x.error||'fail') + '</span>';
+      }
+      var medal = i < 3 && x.ok ? [' \u{1F947}',' \u{1F948}',' \u{1F949}'][i] : '';
+      return '<tr class="row-in" style="animation-delay:' + Math.min(i*15, 500) + 'ms"><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + medal + '</td><td>' + ms + '</td></tr>';
     }).join('');
     document.getElementById('ipscan-results').innerHTML =
       '<table><thead><tr><th>IP</th><th>\u062A\u0623\u062E\u06CC\u0631</th></tr></thead><tbody>' + rows + '</tbody></table>';
@@ -7037,7 +7536,140 @@ document.getElementById('cf-ok').addEventListener('click', function(){
 });
 
 /* ---------- start ---------- */
+
+/* ---------- in-panel self-update ---------- */
+function flagEmoji(cc){
+  if (!cc || cc.length !== 2) return '';
+  var A = 0x1F1E6, Z = 0x1F1FF;
+  var base = 'A'.charCodeAt(0);
+  function ch(c){ return String.fromCodePoint(A + (c.toUpperCase().charCodeAt(0) - base)); }
+  try { return ch(cc[0]) + ch(cc[1]); } catch(e){ return ''; }
+}
+function pingClass(ms){
+  if (ms == null) return 'ping-idle';
+  if (ms < 200) return 'ping-good';
+  if (ms < 500) return 'ping-mid';
+  return 'ping-bad';
+}
+function pingCell(ms, state){
+  if (state === 'probing') return '<span class="ping-cell ping-probing"><span class="ping-dot"></span>\u062F\u0631 \u062D\u0627\u0644 \u062A\u0633\u062A\u2026</span>';
+  if (state === 'dead') return '<span class="ping-cell ping-bad"><span class="ping-dot"></span>\u0631\u062F \u0634\u062F</span>';
+  if (ms == null || ms < 0) return '<span class="ping-cell ping-idle"><span class="ping-dot"></span>\u2014</span>';
+  return '<span class="ping-cell ' + pingClass(ms) + '"><span class="ping-dot"></span>' + ms + 'ms</span>';
+}
+
+var _updateInfo = null;
+async function checkForUpdate(showIfLatest){
+  try {
+    var r = await API.get('/api/system/update/check');
+    _updateInfo = r;
+    var pill = document.getElementById('btn-update-pill');
+    var dot = pill.querySelector('.badge-dot');
+    if (r.behind) {
+      pill.classList.add('available');
+      dot.style.display = '';
+      pill.title = '\u0646\u0633\u062E\u0647 \u062C\u062F\u06CC\u062F \u0645\u0648\u062C\u0648\u062F \u0627\u0633\u062A!';
+      showUpdateBanner(r);
+    } else {
+      pill.classList.remove('available');
+      dot.style.display = 'none';
+      if (showIfLatest) toast('\u0622\u062E\u0631\u06CC\u0646 \u0646\u0633\u062E\u0647 \u0646\u0635\u0628 \u0627\u0633\u062A (' + (r.current || '').slice(0,7) + ')');
+    }
+  } catch(e){ if (showIfLatest) toast(e.message, 'error'); }
+}
+function showUpdateBanner(info){
+  var b = document.getElementById('update-banner');
+  document.getElementById('update-note').textContent =
+    (info.message || '\u0646\u0633\u062E\u0647 \u062C\u062F\u06CC\u062F') + (info.date ? ' \u2014 ' + new Date(info.date).toLocaleDateString('fa-IR') : '');
+  b.classList.add('show');
+}
+function hideUpdateBanner(){
+  document.getElementById('update-banner').classList.remove('show');
+}
+async function runSelfUpdate(){
+  var banner = document.getElementById('update-banner');
+  var btn = document.getElementById('btn-update-now');
+  banner.classList.add('busy');
+  btn.disabled = true; btn.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u0622\u067E\u062F\u06CC\u062A...';
+  try {
+    await API.post('/api/system/update/run', {});
+    btn.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u0628\u0627\u0631\u06AF\u0630\u0627\u0631\u06CC \u0645\u062C\u062F\u062F...';
+    // Wait for the Worker to be swapped by Cloudflare, then reload.
+    setTimeout(function(){ location.reload(); }, 18000);
+  } catch(e){
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = '\u0647\u0645\u06CC\u0646 \u062D\u0627\u0644\u0627 \u0622\u067E\u062F\u06CC\u062A \u06A9\u0646';
+    banner.classList.remove('busy');
+  }
+}
+document.getElementById('btn-update-pill').addEventListener('click', function(){
+  if (_updateInfo && _updateInfo.behind) showUpdateBanner(_updateInfo);
+  else checkForUpdate(true);
+});
+document.getElementById('btn-update-now').addEventListener('click', runSelfUpdate);
+document.getElementById('btn-update-dismiss').addEventListener('click', hideUpdateBanner);
+
+/* ---------- browser-side proxy TCP ping ----------
+   Mirrors browserScanIps: tries to load a 1px image from the proxy
+   host:port. Any fast onerror means the TCP stack reached the host
+   (port open or rejected \u2014 both mean the host is alive); a timeout
+   means filtered/dead. Returns RTT in ms. Browsers cannot speak SOCKS,
+   so this is a reachability + RTT test only \u2014 it does NOT verify the
+   proxy can relay traffic.
+*/
+function browserPingProxy(uri, timeoutMs){
+  return new Promise(function(resolve){
+    var u;
+    try { u = new URL(uri); } catch(e){ return resolve({ok:false, latencyMs:-1, error:'bad-uri'}); }
+    var host = u.hostname;
+    var port = parseInt(u.port || (u.protocol === 'http:' ? '80' : '1080'), 10);
+    // Always probe over HTTPS to avoid mixed-content blocking from the
+    // HTTPS panel. Non-TLS ports (80, 1080, 8080...) will reject the TLS
+    // handshake, but that rejection still arrives after a real TCP round
+    // trip \u2014 which is the RTT we want.
+    var start = Date.now();
+    var img = new Image();
+    var finished = false;
+    var timer = setTimeout(function(){
+      if (finished) return; finished = true;
+      resolve({ok:false, latencyMs:-1, error:'timeout'});
+    }, timeoutMs);
+  img.onload = function(){ if (finished) return; finished = true; clearTimeout(timer); resolve({ok:true, latencyMs: Date.now()-start}); };
+  img.onerror = function(){ if (finished) return; finished = true; clearTimeout(timer); resolve({ok:true, latencyMs: Date.now()-start}); };
+  try {
+    img.src = 'https://' + host + ':' + port + '/favicon.ico?_=' + Math.random();
+  } catch(e){
+    if (finished) return; finished = true; clearTimeout(timer);
+    resolve({ok:true, latencyMs: Date.now()-start});
+  }
+  });
+}
+async function browserPingProxies(items, concurrency, timeoutMs, onProgress){
+  var results = new Array(items.length);
+  var cursor = 0, active = 0, done = 0;
+  return new Promise(function(resolve){
+    function pump(){
+      while (active < concurrency && cursor < items.length){
+        var i = cursor++; active++; probe(i);
+      }
+      if (done === items.length) resolve(results);
+    }
+    function probe(i){
+      var item = items[i];
+      browserPingProxy(item.uri || item, timeoutMs).then(function(r){
+        results[i] = { uri: item.uri || item, ok: r.ok, latencyMs: r.latencyMs, error: r.error };
+        done++; active--;
+        if (onProgress) onProgress(done, results[i]);
+        pump();
+      });
+    }
+    pump();
+  });
+}
+
 boot();
+// Check for update a few seconds after the panel loads (non-blocking).
+setTimeout(function(){ checkForUpdate(false); }, 3500);
 </script>
 </body></html>`;
 }

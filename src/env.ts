@@ -15,6 +15,9 @@ export type Env = {
   PANEL_SECRET: string;
   TELEGRAM_TOKEN?: string;
   TELEGRAM_ADMIN_ID?: string;
+  CF_API_TOKEN?: string;       // Cloudflare API token for in-panel self-update
+  CF_ACCOUNT_ID?: string;      // optional override; otherwise auto-detected
+  CF_SCRIPT_NAME?: string;     // optional override; otherwise derived from request host
 
   // Public vars
   APP_NAME: string;

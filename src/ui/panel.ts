@@ -284,9 +284,96 @@ export function panelHtml(version: string, bootstrap = false): string {
   .empty { text-align:center; padding:50px 20px; color:var(--muted); }
   .empty svg { margin:0 auto 12px; opacity:.4; }
   .kbd { font-family:ui-monospace,monospace; font-size:10px; background:rgba(148,163,184,.1); padding:2px 6px; border-radius:5px; border:1px solid var(--border); }
+
+  /* Update banner */
+  .update-banner { display:none; align-items:center; gap:12px; padding:10px 16px;
+    background:linear-gradient(135deg,rgba(245,158,11,.16),rgba(239,68,68,.14));
+    border-bottom:1px solid rgba(245,158,11,.35); color:#fde68a; font-size:13px; }
+  .update-banner.show { display:flex; animation:slideDown .3s ease; }
+  @keyframes slideDown { from { transform:translateY(-100%); } to { transform:none; } }
+  .update-banner .ic { width:30px; height:30px; border-radius:10px; display:grid; place-items:center;
+    background:rgba(245,158,11,.2); color:#fbbf24; flex-shrink:0; }
+  .update-banner .spinner { width:14px; height:14px; border:2px solid rgba(251,191,36,.25); border-top-color:#fbbf24;
+    border-radius:50%; animation:spin .8s linear infinite; display:none; }
+  .update-banner.busy .spinner { display:inline-block; }
+  .update-banner.busy .btn { opacity:.6; pointer-events:none; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .update-banner .msg { flex:1; min-width:0; }
+  .update-banner .msg b { color:#fcd34d; }
+
+  /* Country flag chips */
+  .flag { font-size:16px; line-height:1; margin-left:6px; }
+
+  /* Proxy row ping */
+  .ping-cell { display:inline-flex; align-items:center; gap:6px; font-weight:700; font-family:ui-monospace,monospace; font-size:12px; }
+  .ping-dot { width:8px; height:8px; border-radius:50%; }
+  .ping-good { color:#34d399; } .ping-good .ping-dot { background:#10b981; box-shadow:0 0 8px #10b981; }
+  .ping-mid  { color:#fbbf24; } .ping-mid  .ping-dot { background:#f59e0b; box-shadow:0 0 8px #f59e0b; }
+  .ping-bad  { color:#fb7185; } .ping-bad  .ping-dot { background:#f43f5e; }
+  .ping-idle { color:#64748b; } .ping-idle .ping-dot { background:#475569; }
+  .ping-probing { color:#67e8f9; }
+  .ping-probing .ping-dot { background:#22d3ee; animation:pulsePing 1s ease-in-out infinite; }
+  @keyframes pulsePing { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.4)} }
+
+  /* Smart scanner */
+  .scan-step { display:flex; align-items:center; gap:10px; padding:14px 16px; border-radius:14px;
+    background:rgba(148,163,184,.04); border:1px solid var(--border); margin-bottom:10px; transition:.2s; cursor:pointer; }
+  .scan-step:hover { background:rgba(34,211,238,.05); border-color:rgba(34,211,238,.2); }
+  .scan-step.active { background:linear-gradient(135deg,rgba(34,211,238,.1),rgba(14,165,233,.05));
+    border-color:rgba(34,211,238,.4); box-shadow:0 0 0 3px rgba(34,211,238,.08); }
+  .scan-step .num { width:32px; height:32px; border-radius:10px; display:grid; place-items:center;
+    font-weight:800; font-size:14px; background:rgba(148,163,184,.1); color:#94a3b8; flex-shrink:0; }
+  .scan-step.active .num { background:linear-gradient(135deg,#22d3ee,#0ea5e9); color:#00131c; }
+  .scan-step .body { flex:1; min-width:0; }
+  .scan-step .title { font-weight:700; font-size:14px; }
+  .scan-step .desc { font-size:11px; color:var(--muted); margin-top:2px; }
+
+  /* Skeleton shimmer */
+  .shimmer { background:linear-gradient(90deg,rgba(148,163,184,.05) 0%,rgba(148,163,184,.15) 50%,rgba(148,163,184,.05) 100%);
+    background-size:200% 100%; animation:shimmer 1.5s infinite; border-radius:6px; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+  /* Fade in rows */
+  .row-in { animation:rowIn .35s ease both; }
+  @keyframes rowIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+  /* Glow pulse on action buttons */
+  .btn-glow { position:relative; overflow:hidden; }
+  .btn-glow::after { content:''; position:absolute; inset:0;
+    background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.25) 50%,transparent 70%);
+    transform:translateX(-100%); animation:sheen 3s infinite; }
+  @keyframes sheen { 0%,60%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+  /* Update icon in topbar (animated when update available) */
+  .update-pill { position:relative; cursor:pointer; padding:8px; border-radius:10px; transition:.15s;
+    color:#94a3b8; background:transparent; border:none; }
+  .update-pill:hover { background:rgba(148,163,184,.08); color:#e5e7eb; }
+  .update-pill.available { color:#fbbf24; animation:wobble 2.2s ease-in-out infinite; }
+  @keyframes wobble { 0%,100%{transform:rotate(0)} 15%{transform:rotate(-18deg)} 30%{transform:rotate(14deg)} 45%{transform:rotate(-8deg)} 60%{transform:rotate(4deg)} 75%{transform:rotate(0)} }
+  .update-pill .badge-dot { position:absolute; top:4px; right:4px; width:8px; height:8px; border-radius:50%;
+    background:#f43f5e; box-shadow:0 0 0 0 rgba(244,63,94,.6); animation:pulseDot 1.6s infinite; }
+  @keyframes pulseDot { 0%{box-shadow:0 0 0 0 rgba(244,63,94,.6)} 70%{box-shadow:0 0 0 8px rgba(244,63,94,0)} 100%{box-shadow:0 0 0 0 rgba(244,63,94,0)} }
 </style>
 </head>
 <body>
+
+<!-- ===== Update banner ===== -->
+<div id="update-banner" class="update-banner">
+  <div class="ic">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+      <path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+    </svg>
+  </div>
+  <div class="msg">
+    <b>نسخه‌ی جدید پنل آماده است!</b>
+    <span id="update-note" class="text-slate-300 text-xs block"></span>
+  </div>
+  <span class="spinner"></span>
+  <button id="btn-update-now" class="btn btn-amber btn-glow" style="padding:8px 16px;font-size:12px">همین حالا آپدیت کن</button>
+  <button id="btn-update-dismiss" class="btn btn-icon btn-ghost" title="بعداً" style="width:30px;height:30px">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
+</div>
 
 <!-- ===== BOOTSTRAP (first admin) ===== -->
 <div id="bootstrap" class="min-h-screen grid place-items-center p-4" style="display:none">
@@ -342,6 +429,12 @@ export function panelHtml(version: string, bootstrap = false): string {
         <button id="btn-new" class="btn btn-primary" title="کاربر جدید">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           <span class="hidden sm:inline">کاربر جدید</span>
+        </button>
+        <button id="btn-update-pill" class="update-pill" title="بررسی آپدیت">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+          </svg>
+          <span class="badge-dot" style="display:none"></span>
         </button>
         <div class="me-chip" title="خروج">
           <div class="avatar" id="me-avatar" style="background:linear-gradient(135deg,#22d3ee,#0ea5e9)">A</div>
@@ -439,16 +532,16 @@ export function panelHtml(version: string, bootstrap = false): string {
     <!-- PROXIES -->
     <section data-page="proxies" style="display:none">
       <div class="glass rounded-2xl p-5 mb-4">
-        <h2 class="font-bold mb-1">افزودن پروکسی</h2>
+        <h2 class="font-bold mb-1">استخر پروکسی</h2>
         <p class="text-xs text-slate-400 mb-4">یک URL فایل متنی لیست پروکسی وارد کن (هر خط socks5://user:pass@host:port یا host:port)</p>
         <div class="flex flex-wrap gap-2">
           <input id="proxy-url" class="input flex-1 min-w-[200px]" placeholder="https://example.com/proxy/US.txt"/>
           <input id="proxy-cc" class="input" style="max-width:120px" placeholder="کد کشور (US)"/>
           <button id="proxy-import" class="btn btn-primary">ایمپورت</button>
-          <button id="proxy-health" class="btn btn-ghost">بررسی سلامت</button>
+          <button id="proxy-browser-ping" class="btn btn-violet btn-glow">📡 پینگ از مرورگر</button>
           <button id="proxy-reload" class="btn btn-ghost">همگام‌سازی DO</button>
         </div>
-        <p class="text-xs text-slate-500 mt-2">بعد از ایمپورت، در ویرایش کاربر می‌توانی «کد کشور استخر» را ست کنی تا به‌صورت تصادفی از پروکسی‌های سالم آن کشور استفاده شود.</p>
+        <p class="text-xs text-slate-500 mt-2">دکمه «پینگ از مرورگر» از همین اینترنت تو به همه پروکسی‌ها وصل می‌شه و تأخیر واقعی را نشون می‌ده. در ویرایش کاربر می‌تونی پروکسی اختصاصی بدی یا کد کشور استخر را ست کنی.</p>
       </div>
       <div class="glass rounded-2xl overflow-hidden">
         <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
@@ -461,10 +554,17 @@ export function panelHtml(version: string, bootstrap = false): string {
 
     <!-- SCANNER -->
     <section data-page="scanner" style="display:none">
-      <div class="flex gap-2 mb-4">
-        <div class="tab active" data-scantab="ip">🌐 اسکنر IP</div>
-        <div class="tab" data-scantab="proxy">🛡 اسکنر پروکسی</div>
+      <div class="glass rounded-2xl p-4 mb-4">
+        <h2 class="font-bold flex items-center gap-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#67e8f9" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/><path d="M12 7v5l3 2"/></svg>
+          اسکنر هوشمند
+        </h2>
+        <p class="text-xs text-slate-400 mt-1">IPهای کلودفلر و پروکسی‌ها را مستقیم از همین مرورگر تست کن — پینگ واقعی اینترنت تو.</p>
+      </div>
+      <div class="flex gap-2 mb-4 flex-wrap">
+        <div class="tab active" data-scantab="ip">🌐 اسکن IP تمیز</div>
         <div class="tab" data-scantab="finder">✨ یابنده پروکسی</div>
+        <div class="tab" data-scantab="proxy">🛡 تست دستی پروکسی</div>
       </div>
 
       <div data-scanpane="ip">
@@ -533,8 +633,9 @@ export function panelHtml(version: string, bootstrap = false): string {
               <option value="socks5">فقط SOCKS5</option>
               <option value="http">فقط HTTP</option>
             </select>
-            <input id="finder-max" class="input" type="number" min="20" max="400" value="150" style="max-width:140px" placeholder="حداکثر"/>
+            <input id="finder-max" class="input" type="number" min="20" max="400" value="120" style="max-width:140px" placeholder="حداکثر"/>
             <button id="finder-run" class="btn btn-primary">🔍 جستجو</button>
+            <button id="finder-ping" class="btn btn-violet btn-glow" disabled>📡 پینگ از مرورگر</button>
             <button id="finder-import" class="btn btn-emerald" disabled>➕ افزودن به استخر</button>
           </div>
           <div id="finder-progress" class="text-xs text-slate-400"></div>
@@ -544,7 +645,7 @@ export function panelHtml(version: string, bootstrap = false): string {
             <h3 class="font-bold">کاندیداها</h3>
             <span id="finder-count" class="text-xs text-slate-400">—</span>
           </div>
-          <div id="finder-results" style="max-height:460px;overflow:auto"></div>
+          <div id="finder-results" style="max-height:500px;overflow:auto"></div>
         </div>
       </div>
     </section>
@@ -675,9 +776,31 @@ export function panelHtml(version: string, bootstrap = false): string {
         <label class="field" style="grid-column:1/-1"><span>SNI / Host (خالی = هاست ورکر)</span><input id="f-sniHost" class="input" placeholder="example.com"/></label>
         <label class="field" style="grid-column:1/-1"><span>Fragment مثل 200-3000,1-2,tlshello</span><input id="f-fragment" class="input mono" placeholder="اختیاری"/></label>
       </div>
-      <div class="section-title">مسیریابی و فیلتر محتوا</div>
+      <div class="section-title">پروکسی بالادست</div>
+      <div class="glass rounded-xl p-3 mb-3" style="background:rgba(34,211,238,.04);border:1px dashed rgba(34,211,238,.25)">
+        <div class="flex items-center gap-2 flex-wrap">
+          <label class="flex items-center gap-2 text-xs cursor-pointer mb-0">
+            <span class="switch" style="width:36px;height:20px"><input type="checkbox" id="f-useProxy"><span class="slider" style="height:20px;width:36px"></span></span>
+            <b>استفاده از پروکسی برای این کاربر</b>
+          </label>
+          <button type="button" id="f-proxyFinder" class="btn btn-ghost" style="padding:6px 12px;font-size:11px;margin-right:auto">✨ یافتن پروکسی</button>
+        </div>
+        <div id="f-proxyPicker" style="display:none;margin-top:12px">
+          <div class="flex gap-2 flex-wrap mb-2">
+            <select id="f-finder-scheme" class="input" style="max-width:160px;padding:8px 10px;font-size:12px">
+              <option value="both">SOCKS5 + HTTP</option>
+              <option value="socks5">فقط SOCKS5</option>
+              <option value="http">فقط HTTP</option>
+            </select>
+            <button type="button" id="f-finder-scan" class="btn btn-primary" style="padding:7px 14px;font-size:12px">🔍 جستجو و پینگ</button>
+            <button type="button" id="f-finder-pool" class="btn btn-ghost" style="padding:7px 14px;font-size:12px">از استخر</button>
+            <span id="f-finder-progress" class="text-xs text-slate-400 self-center"></span>
+          </div>
+          <div id="f-finder-results" style="max-height:240px;overflow:auto;border-radius:10px;border:1px solid var(--border)"></div>
+        </div>
+      </div>
       <div class="grid2">
-        <label class="field"><span>کد کشور استخر پروکسی (مثل US)</span><input id="f-userProxyIata" class="input mono" placeholder="اختیاری"/></label>
+        <label class="field"><span>کد کشور استخر (مثل US — اگر پروکسی دستی ست نکنی)</span><input id="f-userProxyIata" class="input mono" placeholder="اختیاری"/></label>
         <label class="field"><span>پروکسی بالادست دستی</span><input id="f-userSocks5" class="input mono" placeholder="socks5://u:p@host:port"/></label>
         <label class="field" style="grid-column:1/-1"><span>دامنه‌های مستقیم (با کاما)</span><input id="f-routeDirect" class="input" placeholder="example.ir, domain.com"/></label>
         <label class="field" style="grid-column:1/-1"><span>دامنه‌های مسدود (با کاما)</span><input id="f-routeBlock" class="input" placeholder="ads.example.com"/></label>
@@ -1057,7 +1180,13 @@ function openUserModal(username){
   document.getElementById('f-sniHost').value = u ? (u.sni_host || '') : '';
   document.getElementById('f-fragment').value = u ? (u.fragment || '') : '';
   document.getElementById('f-userProxyIata').value = u ? (u.user_proxy_iata || '') : '';
-  document.getElementById('f-userSocks5').value = u ? (u.user_socks5 || '') : '';
+  var socksVal = u ? (u.user_socks5 || '') : '';
+  document.getElementById('f-userSocks5').value = socksVal;
+  var useProxy = document.getElementById('f-useProxy');
+  useProxy.checked = !!socksVal;
+  document.getElementById('f-proxyPicker').style.display = socksVal ? '' : 'none';
+  document.getElementById('f-finder-results').innerHTML = '';
+  document.getElementById('f-finder-progress').textContent = '';
   document.getElementById('f-routeDirect').value = u ? parseList(u.route_direct) : '';
   document.getElementById('f-routeBlock').value = u ? parseList(u.route_block) : '';
   document.getElementById('f-dohUrl').value = u ? (u.doh_url || '') : '';
@@ -1086,7 +1215,7 @@ document.getElementById('mu-save').addEventListener('click', async function(){
     sniHost: document.getElementById('f-sniHost').value.trim() || null,
     fragment: document.getElementById('f-fragment').value.trim() || null,
     userProxyIata: document.getElementById('f-userProxyIata').value.trim().toUpperCase() || null,
-    userSocks5: document.getElementById('f-userSocks5').value.trim() || null,
+    userSocks5: document.getElementById('f-useProxy').checked ? (document.getElementById('f-userSocks5').value.trim() || null) : null,
     routeDirect: csvList(document.getElementById('f-routeDirect').value),
     routeBlock: csvList(document.getElementById('f-routeBlock').value),
     dohUrl: document.getElementById('f-dohUrl').value.trim() || null,
@@ -1110,6 +1239,105 @@ document.getElementById('mu-save').addEventListener('click', async function(){
     loadUsers(); loadStats();
   } catch(e){ toast(e.message, 'error'); }
   btn.disabled = false; btn.textContent = 'ذخیره کاربر';
+});
+
+/* ---------- in-modal proxy finder ---------- */
+var _modalFinderCandidates = [];
+document.getElementById('f-useProxy').addEventListener('change', function(){
+  document.getElementById('f-proxyPicker').style.display = this.checked ? '' : 'none';
+  if (!this.checked) document.getElementById('f-userSocks5').value = '';
+});
+document.getElementById('f-proxyFinder').addEventListener('click', function(){
+  var cb = document.getElementById('f-useProxy');
+  cb.checked = true;
+  cb.dispatchEvent(new Event('change'));
+});
+function setModalProxy(uri){
+  document.getElementById('f-userSocks5').value = uri;
+  toast('پروکسی انتخاب شد: ' + uri.slice(0, 40) + (uri.length > 40 ? '…' : ''));
+  // highlight selected row
+  document.querySelectorAll('[data-modal-uri]').forEach(function(el){
+    el.style.background = el.dataset.modalUri === uri ? 'rgba(16,185,129,.12)' : '';
+  });
+}
+async function modalFinderScan(){
+  var scheme = document.getElementById('f-finder-scheme').value;
+  var btn = document.getElementById('f-finder-scan');
+  var prog = document.getElementById('f-finder-progress');
+  var out = document.getElementById('f-finder-results');
+  btn.disabled = true; btn.textContent = '🔍 جستجو...';
+  prog.textContent = 'دانلود لیست‌ها...';
+  try {
+    var body = { maxTotal: 60, maxPerSource: 15 };
+    if (scheme === 'socks5') body.schemes = ['socks5'];
+    if (scheme === 'http') body.schemes = ['http'];
+    var r = await API.post('/api/scanner/finder/run', body);
+    prog.textContent = r.totalCandidates + ' کاندید — در حال پینگ از مرورگر شما...';
+    _modalFinderCandidates = r.candidates || [];
+    // Render with probing state
+    renderModalFinderRows(_modalFinderCandidates.map(function(c){return {uri:c.uri,source:c.source,scheme:c.scheme,state:'probing'};}));
+    var hosts = _modalFinderCandidates.map(function(c){ try { return new URL(c.uri).hostname; } catch(e){ return ''; } }).filter(Boolean);
+    var geo = {};
+    try { var g = await API.post('/api/proxies/geoip',{hosts:hosts}); geo = g.results||{}; } catch(e){}
+    var items = _modalFinderCandidates.map(function(c){
+      var cc = '';
+      try { var h = new URL(c.uri).hostname; if (geo[h]&&geo[h].countryCode) cc = geo[h].countryCode; } catch(e){}
+      return { uri: c.uri, source: c.source, scheme: c.scheme, country: cc, state: 'probing' };
+    });
+    var done = 0;
+    await browserPingProxies(items, 8, 3000, function(_d, res){
+      done++;
+      var item = items.find(function(x){return x.uri === res.uri;});
+      if (item) { item.state = res.ok ? 'ok' : 'dead'; item.latencyMs = res.latencyMs; }
+      if (done % 3 === 0 || done === items.length) renderModalFinderRows(items);
+      prog.textContent = done + '/' + items.length + ' تست شد';
+    });
+    var ok = items.filter(function(x){return x.state==='ok';}).sort(function(a,b){return (a.latencyMs||9999)-(b.latencyMs||9999);});
+    prog.innerHTML = '<span class="text-emerald-400">✅ ' + ok.length + ' سالم</span> از ' + items.length;
+    btn.disabled = false; btn.textContent = '🔍 جستجو و پینگ';
+  } catch(e){
+    prog.innerHTML = '<span class="text-rose-400">خطا: ' + esc(e.message) + '</span>';
+    btn.disabled = false; btn.textContent = '🔍 جستجو و پینگ';
+  }
+}
+function renderModalFinderRows(items){
+  var out = document.getElementById('f-finder-results');
+  if (!items.length) { out.innerHTML = '<div class="empty" style="padding:20px">چیزی نیست</div>'; return; }
+  var html = '<table style="width:100%"><tbody>';
+  items.forEach(function(it, i){
+    var flag = it.country ? '<span class="flag">' + flagEmoji(it.country) + '</span>' : '';
+    var p;
+    if (it.state === 'probing') p = pingCell(null,'probing');
+    else if (it.state === 'dead') p = pingCell(null,'dead');
+    else p = pingCell(it.latencyMs, null);
+    var schemeChip = it.scheme === 'socks5' ? '<span class="chip chip-violet">S5</span>' : '<span class="chip chip-cyan">H</span>';
+    var ccChip = it.country ? '<span class="chip chip-slate">' + flag + esc(it.country) + '</span>' : '';
+    html += '<tr data-modal-uri="' + esc(it.uri) + '" style="opacity:' + (it.state==='dead'?0.45:1) + '">' +
+      '<td style="padding:8px 10px"><div class="mono text-[11px]" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(it.uri) + '">' + esc(it.uri) + '</div>' +
+      '<div class="text-[10px] text-slate-500">' + esc(it.source||'') + '</div></td>' +
+      '<td style="padding:8px 6px;white-space:nowrap">' + schemeChip + ccChip + '</td>' +
+      '<td style="padding:8px 10px;white-space:nowrap">' + p + '</td>' +
+      '<td style="padding:8px 10px"><button type="button" class="btn btn-emerald" style="padding:5px 10px;font-size:11px" data-set-uri="' + esc(it.uri) + '"' + (it.state==='dead'?' disabled':'') + '>ست</button></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  out.innerHTML = html;
+  out.querySelectorAll('[data-set-uri]').forEach(function(b){
+    b.addEventListener('click', function(){ setModalProxy(b.dataset.setUri); });
+  });
+}
+document.getElementById('f-finder-scan').addEventListener('click', modalFinderScan);
+document.getElementById('f-finder-pool').addEventListener('click', async function(){
+  var btn = this; btn.disabled = true;
+  try {
+    var r = await API.get('/api/proxies?pageSize=80');
+    var items = (r.proxies||[]).filter(function(p){return p.is_active;}).map(function(p){
+      return { uri: p.uri, source: 'pool', scheme: p.uri.indexOf('socks')===0?'socks5':'http', country: (p.country||'').toUpperCase(), state:'ok', latencyMs: p.latency_ms };
+    });
+    renderModalFinderRows(items);
+    document.getElementById('f-finder-progress').textContent = items.length + ' پروکسی از استخر';
+  } catch(e){ toast(e.message,'error'); }
+  btn.disabled = false;
 });
 
 /* ---------- sub modal ---------- */
@@ -1147,32 +1375,111 @@ document.getElementById('sub-copy').addEventListener('click', function(){
 });
 
 /* ---------- proxies ---------- */
+var _proxiesCache = [];
 async function loadProxies(){
   try {
-    var r = await API.get('/api/proxies?pageSize=100');
+    var r = await API.get('/api/proxies?pageSize=200');
+    _proxiesCache = r.proxies || [];
     document.getElementById('proxy-count').textContent = fmtNum(r.total) + ' پروکسی';
-    var ps = r.proxies || [];
-    if (!ps.length) {
+    if (!_proxiesCache.length) {
       document.getElementById('proxies-table').innerHTML = '<div class="empty">هنوز پروکسی‌ای اضافه نشده</div>';
       return;
     }
-    document.getElementById('proxies-table').innerHTML =
-      '<table><thead><tr><th>URI</th><th>کشور</th><th>Latency</th><th>وضعیت</th><th></th></tr></thead><tbody>' +
-      ps.map(function(p){
-        return '<tr>' +
-          '<td class="mono text-[11px]" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
-          '<td><span class="chip chip-cyan">' + esc((p.country||'—').toUpperCase()) + '</span></td>' +
-          '<td class="text-xs text-slate-400">' + (p.latency_ms ? p.latency_ms + 'ms' : '—') + '</td>' +
-          '<td>' + (p.is_active ? '<span class="chip chip-green">فعال</span>' : '<span class="chip chip-red">غیرفعال</span>') + '</td>' +
-          '<td><button class="btn btn-ghost btn-icon" data-pid="' + p.id + '" title="حذف"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button></td>' +
-        '</tr>';
-      }).join('') + '</tbody></table>';
-    document.querySelectorAll('[data-pid]').forEach(function(b){
-      b.addEventListener('click', function(){
-        API.del('/api/proxies/' + b.dataset.pid).then(function(){ toast('حذف شد'); loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
-      });
-    });
+    renderProxiesTable();
   } catch(e){ document.getElementById('proxies-table').innerHTML = '<div class="empty text-rose-400">' + esc(e.message) + '</div>'; }
+}
+function renderProxiesTable(probeState){
+  // probeState: map uri -> 'probing'|'dead'|{latencyMs}
+  probeState = probeState || {};
+  var ps = _proxiesCache.slice().sort(function(a,b){
+    // Sort alive (with latency) first, then by latency ascending, dead last
+    var la = a.latency_ms || 99999, lb = b.latency_ms || 99999;
+    if (a.is_active !== b.is_active) return b.is_active - a.is_active;
+    return la - lb;
+  });
+  var html = '<table><thead><tr><th style="width:32px"></th><th>پروکسی</th><th>کشور</th><th>پینگ</th><th>سلامت</th><th></th></tr></thead><tbody>';
+  ps.forEach(function(p, idx){
+    var cc = (p.country||'').toUpperCase();
+    var flag = cc && cc !== 'XX' ? '<span class="flag">' + flagEmoji(cc) + '</span>' : '';
+    var host; try { host = new URL(p.uri).hostname; } catch(e){ host = p.uri; }
+    var st = probeState[p.uri];
+    var pingHtml;
+    if (st === 'probing') pingHtml = pingCell(null, 'probing');
+    else if (st === 'dead') pingHtml = pingCell(null, 'dead');
+    else if (st && st.latencyMs != null) pingHtml = pingCell(st.latencyMs, null);
+    else pingHtml = pingCell(p.latency_ms, null);
+    var rate = p.success_rate == null ? 100 : p.success_rate;
+    var rateChip = rate >= 80 ? 'chip-green' : rate >= 40 ? 'chip-amber' : 'chip-red';
+    var checked = p.last_checked ? new Date(p.last_checked*1000).toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'}) : '—';
+    html += '<tr class="row-in" style="animation-delay:' + Math.min(idx*10, 400) + 'ms">' +
+      '<td><button class="btn btn-icon btn-ghost" data-toggle="' + p.id + '" title="فعال/غیرفعال" style="width:28px;height:28px;padding:0">' +
+        (p.is_active ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
+                    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2.5"><circle cx="12" cy="12" r="9"/></svg>') +
+      '</button></td>' +
+      '<td><div class="mono text-[11px]" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p.uri) + '">' + esc(p.uri) + '</div>' +
+          '<div class="text-[10px] text-slate-500 mono">' + esc(host) + ' · ' + esc(checked) + '</div></td>' +
+      '<td>' + (cc ? '<span class="chip chip-cyan">' + flag + esc(cc) + '</span>' : '<span class="chip chip-slate">—</span>') + '</td>' +
+      '<td>' + pingHtml + '</td>' +
+      '<td><span class="chip ' + rateChip + '">' + rate + '%</span></td>' +
+      '<td><button class="btn btn-ghost btn-icon" data-pid="' + p.id + '" title="حذف" style="width:28px;height:28px;padding:0;color:#fb7185"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button></td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('proxies-table').innerHTML = html;
+  document.querySelectorAll('[data-pid]').forEach(function(b){
+    b.addEventListener('click', function(){
+      API.del('/api/proxies/' + b.dataset.pid).then(function(){ toast('حذف شد'); loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
+    });
+  });
+  document.querySelectorAll('[data-toggle]').forEach(function(b){
+    b.addEventListener('click', function(){
+      API.post('/api/proxies/' + b.dataset.toggle + '/toggle', {}).then(function(){ loadProxies(); }).catch(function(e){ toast(e.message,'error'); });
+    });
+  });
+}
+async function browserPingAllProxies(){
+  if (!_proxiesCache.length) return toast('پروکسی‌ای برای تست نیست', 'error');
+  var btn = document.getElementById('proxy-browser-ping');
+  btn.disabled = true; btn.textContent = '📡 در حال پینگ...';
+  var probeState = {};
+  _proxiesCache.forEach(function(p){ probeState[p.uri] = 'probing'; });
+  renderProxiesTable(probeState);
+  var results = [];
+  var hostList = _proxiesCache.map(function(p){
+    try { return new URL(p.uri).hostname; } catch(e){ return ''; }
+  }).filter(Boolean);
+  var geo = {};
+  try {
+    var g = await API.post('/api/proxies/geoip', { hosts: hostList });
+    geo = g.results || {};
+  } catch(e){}
+  var t0 = Date.now();
+  await browserPingProxies(_proxiesCache, 8, 3500, function(done, res){
+    probeState[res.uri] = res.ok ? { latencyMs: res.latencyMs } : 'dead';
+    if (done % 5 === 0 || done === _proxiesCache.length) renderProxiesTable(probeState);
+    var prog = document.getElementById('proxy-count');
+    if (prog) prog.textContent = 'پینگ... ' + done + '/' + _proxiesCache.length;
+    results.push(res);
+  });
+  // Save pings + country back to server
+  var ccByUri = {};
+  _proxiesCache.forEach(function(p){
+    try {
+      var h = new URL(p.uri).hostname;
+      var g = geo[h];
+      if (g && g.countryCode) ccByUri[p.uri] = g.countryCode;
+    } catch(e){}
+  });
+  try {
+    await API.post('/api/proxies/bulk-ping', {
+      results: results.map(function(r){
+        return { uri: r.uri, ok: r.ok, latencyMs: r.ok ? r.latencyMs : null, country: ccByUri[r.uri] || null };
+      })
+    });
+  } catch(e){ console.warn('bulk-ping save failed', e); }
+  toast('پینگ تمام شد در ' + ((Date.now()-t0)/1000).toFixed(1) + 's');
+  btn.disabled = false; btn.textContent = '📡 پینگ از مرورگر';
+  loadProxies();
 }
 document.getElementById('proxy-import').addEventListener('click', async function(){
   var url = document.getElementById('proxy-url').value.trim();
@@ -1186,9 +1493,7 @@ document.getElementById('proxy-import').addEventListener('click', async function
   } catch(e){ toast(e.message, 'error'); }
   b.disabled = false; b.textContent = 'ایمپورت';
 });
-document.getElementById('proxy-health').addEventListener('click', function(){
-  API.post('/api/proxies/health', {}).then(function(){ toast('بررسی سلامت زمان‌بندی شد'); }).catch(function(e){ toast(e.message,'error'); });
-});
+document.getElementById('proxy-browser-ping').addEventListener('click', browserPingAllProxies);
 document.getElementById('proxy-reload').addEventListener('click', function(){
   API.post('/api/proxies/pool/reload', {}).then(function(r){ toast(r.active + ' پروکسی همگام‌سازی شد'); }).catch(function(e){ toast(e.message,'error'); });
 });
@@ -1207,22 +1512,28 @@ function initScanner(){
       });
     });
   });
-  document.getElementById('ipscan-preset').addEventListener('click', function(){
+  function loadPresetIps(cb){
     API.get('/api/scanner/preset').then(function(r){
-      document.getElementById('ipscan-list').value = r.ips.join('\\n');
+      document.getElementById('ipscan-list').value = r.ips.join(String.fromCharCode(10));
+      if (cb) cb(r.ips);
     });
-  });
+  }
+  document.getElementById('ipscan-preset').addEventListener('click', function(){ loadPresetIps(); });
+  // Auto-load preset on first visit if empty
+  if (!document.getElementById('ipscan-list').value) loadPresetIps();
   document.getElementById('ipscan-run').addEventListener('click', runIpScan);
   document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
   document.getElementById('pscan-run').addEventListener('click', runProxyScan);
   document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
   document.getElementById('finder-run').addEventListener('click', runFinder);
   document.getElementById('finder-import').addEventListener('click', importFoundProxies);
+  document.getElementById('finder-ping').addEventListener('click', pingFoundProxies);
 }
 var _finderCandidates = [];
+var _finderState = {};   // uri -> {state, latencyMs, country}
 async function runFinder(){
   var scheme = document.getElementById('finder-scheme').value;
-  var max = parseInt(document.getElementById('finder-max').value,10) || 150;
+  var max = parseInt(document.getElementById('finder-max').value,10) || 120;
   var btn = document.getElementById('finder-run');
   btn.disabled = true; btn.textContent = '🔍 در حال جستجو...';
   var prog = document.getElementById('finder-progress');
@@ -1234,23 +1545,79 @@ async function runFinder(){
     if (scheme === 'http') body.schemes = ['http'];
     var r = await API.post('/api/scanner/finder/run', body);
     var elapsed = ((Date.now()-t0)/1000).toFixed(1);
-    var lines = ['✅ ' + r.totalCandidates + ' کاندید از ' + r.sourcesFetched + ' منبع در ' + elapsed + 's'];
+    _finderCandidates = r.candidates || [];
+    _finderState = {};
+    _finderCandidates.forEach(function(c){ _finderState[c.uri] = { state:'idle' }; });
+    var lines = ['✅ ' + r.totalCandidates + ' کاندید از ' + r.sourcesFetched + ' منبع در ' + elapsed + 's — برای دیدن پینگ روی «پینگ از مرورگر» بزن.'];
     if (r.sourcesFailed && r.sourcesFailed.length) lines.push('⚠️ ' + r.sourcesFailed.length + ' منبع ناموفق');
     prog.innerHTML = lines.join('<br>');
-    document.getElementById('finder-count').textContent = r.totalCandidates + ' کاندید (آماده ایمپورت)';
-    _finderCandidates = r.candidates || [];
-    var rows = _finderCandidates.slice(0, 200).map(function(p, i){
-      return '<tr><td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
-             '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.uri) + '</td>' +
-             '<td><span class="chip ' + (p.scheme==='socks5'?'chip-violet':'chip-cyan') + '">' + esc(p.scheme.toUpperCase()) + '</span></td>' +
-             '<td><span class="text-slate-400 text-xs">' + esc(p.source||'') + '</span></td></tr>';
-    }).join('');
-    document.getElementById('finder-results').innerHTML =
-      '<table><thead><tr><th>#</th><th>پروکسی</th><th>نوع</th><th>منبع</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('finder-count').textContent = r.totalCandidates + ' کاندید';
+    renderFinderRows();
     document.getElementById('finder-import').disabled = _finderCandidates.length === 0;
+    document.getElementById('finder-ping').disabled = _finderCandidates.length === 0;
     toast(_finderCandidates.length + ' پروکسی پیدا شد');
   } catch(e){ toast(e.message, 'error'); prog.textContent = 'خطا: ' + e.message; }
   btn.disabled = false; btn.textContent = '🔍 جستجو';
+}
+function renderFinderRows(){
+  var list = _finderCandidates.slice(0, 200);
+  var rows = list.map(function(p, i){
+    var st = _finderState[p.uri] || { state:'idle' };
+    var flag = st.country ? '<span class="flag">' + flagEmoji(st.country) + '</span>' : '';
+    var pingHtml;
+    if (st.state === 'probing') pingHtml = pingCell(null,'probing');
+    else if (st.state === 'dead') pingHtml = pingCell(null,'dead');
+    else if (st.state === 'ok') pingHtml = pingCell(st.latencyMs, null);
+    else pingHtml = pingCell(null, null);
+    var schemeChip = p.scheme === 'socks5' ? 'chip-violet' : 'chip-cyan';
+    return '<tr class="row-in" style="animation-delay:' + Math.min(i*8,400) + 'ms;opacity:' + (st.state==='dead'?0.45:1) + '">' +
+      '<td class="text-slate-500 text-xs w-8">' + (i+1) + '</td>' +
+      '<td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p.uri) + '">' + esc(p.uri) + '</td>' +
+      '<td><span class="chip ' + schemeChip + '">' + esc(p.scheme.toUpperCase()) + '</span>' +
+          (st.country ? ' <span class="chip chip-slate">' + flag + esc(st.country) + '</span>' : '') + '</td>' +
+      '<td style="white-space:nowrap">' + pingHtml + '</td>' +
+      '<td><button class="btn btn-emerald" style="padding:5px 10px;font-size:11px" data-finder-set="' + esc(p.uri) + '"' + (st.state!=='ok'?' disabled':'') + '>ست برای کاربر</button></td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('finder-results').innerHTML =
+    '<table><thead><tr><th>#</th><th>پروکسی</th><th>نوع/کشور</th><th>پینگ</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  document.querySelectorAll('[data-finder-set]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var uri = b.dataset.finderSet;
+      // Open new-user modal pre-filled with this proxy
+      openUserModal(null);
+      document.getElementById('f-useProxy').checked = true;
+      document.getElementById('f-useProxy').dispatchEvent(new Event('change'));
+      document.getElementById('f-userSocks5').value = uri;
+      toast('پروکسی در فرم کاربر جدید ست شد');
+    });
+  });
+}
+async function pingFoundProxies(){
+  if (!_finderCandidates.length) return;
+  var btn = document.getElementById('finder-ping');
+  btn.disabled = true; btn.textContent = '📡 در حال پینگ...';
+  var prog = document.getElementById('finder-progress');
+  // GeoIP
+  var hosts = _finderCandidates.map(function(c){ try { return new URL(c.uri).hostname; } catch(e){ return ''; } }).filter(Boolean);
+  var geo = {};
+  try { var g = await API.post('/api/proxies/geoip', {hosts:hosts.slice(0,100)}); geo = g.results||{}; } catch(e){}
+  _finderCandidates.forEach(function(c){
+    _finderState[c.uri] = { state:'probing' };
+    try { var h = new URL(c.uri).hostname; if (geo[h]&&geo[h].countryCode) _finderState[c.uri].country = geo[h].countryCode; } catch(e){}
+  });
+  renderFinderRows();
+  var done = 0;
+  await browserPingProxies(_finderCandidates, 10, 3000, function(_d, res){
+    done++;
+    _finderState[res.uri] = { state: res.ok ? 'ok' : 'dead', latencyMs: res.ok ? res.latencyMs : null,
+      country: (_finderState[res.uri]||{}).country };
+    if (done % 6 === 0 || done === _finderCandidates.length) renderFinderRows();
+    prog.textContent = 'پینگ از مرورگر: ' + done + '/' + _finderCandidates.length;
+  });
+  var ok = _finderCandidates.filter(function(c){ return _finderState[c.uri] && _finderState[c.uri].state === 'ok'; });
+  prog.innerHTML = '<span class="text-emerald-400">✅ ' + ok.length + ' سالم</span> از ' + _finderCandidates.length + ' — می‌تونی با دکمه «ست برای کاربر» مستقیم به یک کاربر اختصاص بدی.';
+  btn.disabled = false; btn.textContent = '📡 پینگ از مرورگر';
 }
 async function importFoundProxies(){
   if (!_finderCandidates.length) return;
@@ -1293,10 +1660,16 @@ async function runIpScan(){
     document.getElementById('ipscan-count').textContent = alive.length + ' سالم از ' + results.length + ' در ' + elapsed + 's';
     prog.textContent = '✅ ' + alive.length + ' پاسخ دادند، ' + (results.length-alive.length) + ' خطا داشتند.' + (mode==='browser' ? ' (نتایج از اینترنت شما)' : ' (نتایج از سرور کلودفلر)');
     _scanAliveIps = sorted.filter(function(x){return x.ok;}).slice(0, 30).map(function(x){return {target:x.target, latencyMs:x.latencyMs};});
-    var rows = sorted.map(function(x){
-      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
-                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
-      return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    var rows = sorted.map(function(x, i){
+      var ms;
+      if (x.ok) {
+        var cls = x.latencyMs < 120 ? 'ping-good' : x.latencyMs < 300 ? 'ping-mid' : 'ping-bad';
+        ms = '<span class="ping-cell ' + cls + '"><span class="ping-dot"></span>' + x.latencyMs + 'ms</span>';
+      } else {
+        ms = '<span class="ping-cell ping-bad"><span class="ping-dot"></span>' + esc(x.error||'fail') + '</span>';
+      }
+      var medal = i < 3 && x.ok ? [' 🥇',' 🥈',' 🥉'][i] : '';
+      return '<tr class="row-in" style="animation-delay:' + Math.min(i*15, 500) + 'ms"><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + medal + '</td><td>' + ms + '</td></tr>';
     }).join('');
     document.getElementById('ipscan-results').innerHTML =
       '<table><thead><tr><th>IP</th><th>تأخیر</th></tr></thead><tbody>' + rows + '</tbody></table>';
@@ -1437,7 +1810,140 @@ document.getElementById('cf-ok').addEventListener('click', function(){
 });
 
 /* ---------- start ---------- */
+
+/* ---------- in-panel self-update ---------- */
+function flagEmoji(cc){
+  if (!cc || cc.length !== 2) return '';
+  var A = 0x1F1E6, Z = 0x1F1FF;
+  var base = 'A'.charCodeAt(0);
+  function ch(c){ return String.fromCodePoint(A + (c.toUpperCase().charCodeAt(0) - base)); }
+  try { return ch(cc[0]) + ch(cc[1]); } catch(e){ return ''; }
+}
+function pingClass(ms){
+  if (ms == null) return 'ping-idle';
+  if (ms < 200) return 'ping-good';
+  if (ms < 500) return 'ping-mid';
+  return 'ping-bad';
+}
+function pingCell(ms, state){
+  if (state === 'probing') return '<span class="ping-cell ping-probing"><span class="ping-dot"></span>در حال تست…</span>';
+  if (state === 'dead') return '<span class="ping-cell ping-bad"><span class="ping-dot"></span>رد شد</span>';
+  if (ms == null || ms < 0) return '<span class="ping-cell ping-idle"><span class="ping-dot"></span>—</span>';
+  return '<span class="ping-cell ' + pingClass(ms) + '"><span class="ping-dot"></span>' + ms + 'ms</span>';
+}
+
+var _updateInfo = null;
+async function checkForUpdate(showIfLatest){
+  try {
+    var r = await API.get('/api/system/update/check');
+    _updateInfo = r;
+    var pill = document.getElementById('btn-update-pill');
+    var dot = pill.querySelector('.badge-dot');
+    if (r.behind) {
+      pill.classList.add('available');
+      dot.style.display = '';
+      pill.title = 'نسخه جدید موجود است!';
+      showUpdateBanner(r);
+    } else {
+      pill.classList.remove('available');
+      dot.style.display = 'none';
+      if (showIfLatest) toast('آخرین نسخه نصب است (' + (r.current || '').slice(0,7) + ')');
+    }
+  } catch(e){ if (showIfLatest) toast(e.message, 'error'); }
+}
+function showUpdateBanner(info){
+  var b = document.getElementById('update-banner');
+  document.getElementById('update-note').textContent =
+    (info.message || 'نسخه جدید') + (info.date ? ' — ' + new Date(info.date).toLocaleDateString('fa-IR') : '');
+  b.classList.add('show');
+}
+function hideUpdateBanner(){
+  document.getElementById('update-banner').classList.remove('show');
+}
+async function runSelfUpdate(){
+  var banner = document.getElementById('update-banner');
+  var btn = document.getElementById('btn-update-now');
+  banner.classList.add('busy');
+  btn.disabled = true; btn.textContent = 'در حال آپدیت...';
+  try {
+    await API.post('/api/system/update/run', {});
+    btn.textContent = 'در حال بارگذاری مجدد...';
+    // Wait for the Worker to be swapped by Cloudflare, then reload.
+    setTimeout(function(){ location.reload(); }, 18000);
+  } catch(e){
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = 'همین حالا آپدیت کن';
+    banner.classList.remove('busy');
+  }
+}
+document.getElementById('btn-update-pill').addEventListener('click', function(){
+  if (_updateInfo && _updateInfo.behind) showUpdateBanner(_updateInfo);
+  else checkForUpdate(true);
+});
+document.getElementById('btn-update-now').addEventListener('click', runSelfUpdate);
+document.getElementById('btn-update-dismiss').addEventListener('click', hideUpdateBanner);
+
+/* ---------- browser-side proxy TCP ping ----------
+   Mirrors browserScanIps: tries to load a 1px image from the proxy
+   host:port. Any fast onerror means the TCP stack reached the host
+   (port open or rejected — both mean the host is alive); a timeout
+   means filtered/dead. Returns RTT in ms. Browsers cannot speak SOCKS,
+   so this is a reachability + RTT test only — it does NOT verify the
+   proxy can relay traffic.
+*/
+function browserPingProxy(uri, timeoutMs){
+  return new Promise(function(resolve){
+    var u;
+    try { u = new URL(uri); } catch(e){ return resolve({ok:false, latencyMs:-1, error:'bad-uri'}); }
+    var host = u.hostname;
+    var port = parseInt(u.port || (u.protocol === 'http:' ? '80' : '1080'), 10);
+    // Always probe over HTTPS to avoid mixed-content blocking from the
+    // HTTPS panel. Non-TLS ports (80, 1080, 8080...) will reject the TLS
+    // handshake, but that rejection still arrives after a real TCP round
+    // trip — which is the RTT we want.
+    var start = Date.now();
+    var img = new Image();
+    var finished = false;
+    var timer = setTimeout(function(){
+      if (finished) return; finished = true;
+      resolve({ok:false, latencyMs:-1, error:'timeout'});
+    }, timeoutMs);
+  img.onload = function(){ if (finished) return; finished = true; clearTimeout(timer); resolve({ok:true, latencyMs: Date.now()-start}); };
+  img.onerror = function(){ if (finished) return; finished = true; clearTimeout(timer); resolve({ok:true, latencyMs: Date.now()-start}); };
+  try {
+    img.src = 'https://' + host + ':' + port + '/favicon.ico?_=' + Math.random();
+  } catch(e){
+    if (finished) return; finished = true; clearTimeout(timer);
+    resolve({ok:true, latencyMs: Date.now()-start});
+  }
+  });
+}
+async function browserPingProxies(items, concurrency, timeoutMs, onProgress){
+  var results = new Array(items.length);
+  var cursor = 0, active = 0, done = 0;
+  return new Promise(function(resolve){
+    function pump(){
+      while (active < concurrency && cursor < items.length){
+        var i = cursor++; active++; probe(i);
+      }
+      if (done === items.length) resolve(results);
+    }
+    function probe(i){
+      var item = items[i];
+      browserPingProxy(item.uri || item, timeoutMs).then(function(r){
+        results[i] = { uri: item.uri || item, ok: r.ok, latencyMs: r.latencyMs, error: r.error };
+        done++; active--;
+        if (onProgress) onProgress(done, results[i]);
+        pump();
+      });
+    }
+    pump();
+  });
+}
+
 boot();
+// Check for update a few seconds after the panel loads (non-blocking).
+setTimeout(function(){ checkForUpdate(false); }, 3500);
 </script>
 </body></html>`;
 }

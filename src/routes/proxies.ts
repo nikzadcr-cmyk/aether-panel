@@ -100,6 +100,89 @@ proxyRoutes.post("/:id/toggle", requireRole("owner", "admin"), async (c) => {
   return c.json({ ok: true });
 });
 
+// Browser-reported ping results: the Worker can't open arbitrary TCP
+// sockets, so the user's browser does the reachability probe and posts
+// RTTs back here. We persist latency, fail_count, success_rate and
+// last_checked, and auto-disable proxies that have failed 5 times.
+proxyRoutes.post("/bulk-ping", requireRole("owner", "admin"), async (c) => {
+  const body: { results?: Array<{ uri: string; ok: boolean; latencyMs?: number; country?: string }> } =
+    await c.req.json().catch(() => ({}));
+  const results = Array.isArray(body.results) ? body.results : [];
+  if (!results.length) return c.json({ ok: true, updated: 0 });
+  const now = nowSec();
+  const stmts = results.slice(0, 500).map((r) => {
+    const ok = r.ok ? 1 : 0;
+    const newRate = r.ok ? 100 : 0;
+    return c.env.DB.prepare(
+      `UPDATE proxies
+       SET latency_ms = CASE WHEN ? = 1 THEN ? ELSE latency_ms END,
+           last_checked = ?,
+           fail_count = CASE WHEN ? = 1 THEN 0 ELSE fail_count + 1 END,
+           success_rate = CASE
+             WHEN success_rate = 100 AND last_checked = 0 THEN ?
+             ELSE CAST((success_rate * 4 + ?) / 5 AS INTEGER)
+           END,
+           is_active = CASE WHEN fail_count >= 5 THEN 0 ELSE is_active END,
+           country = COALESCE(?, country)
+       WHERE uri = ?`
+    ).bind(ok, r.latencyMs ?? null, now, ok, newRate, newRate, r.country || null, r.uri);
+  });
+  await c.env.DB.batch(stmts);
+  await syncPool(c.env);
+  return c.json({ ok: true, updated: stmts.length });
+});
+
+// Server-side GeoIP lookup for proxy hostnames/IPs. Browser can't call
+// ip-api.com directly (no CORS on free tier), so the Worker proxies
+// and caches results in KV for 24h.
+proxyRoutes.post("/geoip", async (c) => {
+  const body: { hosts?: string[] } = await c.req.json().catch(() => ({}));
+  const hosts = Array.from(new Set((body.hosts || []).slice(0, 100))).filter(Boolean);
+  if (!hosts.length) return c.json({ results: {} });
+
+  const cacheKey = (h: string) => "geoip:" + h;
+  const out: Record<string, { country?: string; countryCode?: string; city?: string; isp?: string }> = {};
+  const missing: string[] = [];
+  await Promise.all(
+    hosts.map(async (h) => {
+      const cached = await c.env.KV.get(cacheKey(h), "json").catch(() => null) as typeof out[string] | null;
+      if (cached) out[h] = cached;
+      else missing.push(h);
+    })
+  );
+
+  if (missing.length) {
+    try {
+      const r = await fetch("http://ip-api.com/batch?fields=status,country,countryCode,city,isp,query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(missing),
+      });
+      if (r.ok) {
+        const arr = (await r.json()) as Array<{
+          status: string; query: string; country?: string; countryCode?: string; city?: string; isp?: string;
+        }>;
+        for (const item of arr) {
+          if (item.status !== "success") continue;
+          const data = {
+            country: item.country,
+            countryCode: item.countryCode,
+            city: item.city,
+            isp: item.isp,
+          };
+          out[item.query] = data;
+          c.executionCtx.waitUntil(
+            c.env.KV.put(cacheKey(item.query), JSON.stringify(data), { expirationTtl: 86400 })
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("geoip failed", e);
+    }
+  }
+  return c.json({ results: out });
+});
+
 /* -------- helpers -------- */
 
 function normalizeUri(u: string): string | null {
