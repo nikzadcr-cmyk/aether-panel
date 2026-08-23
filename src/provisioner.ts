@@ -161,17 +161,24 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   await applyD1Schema(api, headers, accountId, d1);
 
   // 10b. hit the worker's auto-bootstrap endpoint so the admin user is
-  // created immediately using ADMIN_BOOTSTRAP_PASSWORD (retry a few times
-  // while the worker propagates).
+  // created immediately using ADMIN_BOOTSTRAP_PASSWORD. Retry aggressively
+  // while the worker first propagates to the edge (can take 5-15s).
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  for (let i = 0; i < 8; i++) {
+  let bootstrapped = false;
+  for (let i = 0; i < 20; i++) {
     try {
       const r = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
-      if (r.ok) break;
+      if (r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { ok?: boolean };
+        if (j.ok) { bootstrapped = true; break; }
+      }
     } catch {
       /* retry */
     }
     await new Promise((res) => setTimeout(res, 1500));
+  }
+  if (!bootstrapped) {
+    console.error("auto-bootstrap did not complete in time for", panelBase);
   }
 
   // 11. register queue consumer
