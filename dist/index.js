@@ -4230,6 +4230,7 @@ async function provisionAccount(input) {
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  const debug = [];
   let loginOk = false;
   for (let i = 0; i < 15; i++) {
     try {
@@ -4246,20 +4247,26 @@ async function provisionAccount(input) {
       });
       if (lr.ok) {
         loginOk = true;
+        debug.push("iter" + i + " OK");
         break;
       }
-      if (i % 3 === 0) {
-        const ltext = await lr.text().catch(() => "");
-        console.log("bootstrap poll", i, "setup=", sr.status, stext.slice(0, 80), "login=", lr.status, ltext.slice(0, 80));
-      }
+      const ltext = await lr.text().catch(() => "");
+      debug.push("i" + i + " s=" + sr.status + "/" + stext.slice(0, 40) + " l=" + lr.status + "/" + ltext.slice(0, 40));
     } catch (e) {
-      if (i % 3 === 0)
-        console.log("bootstrap poll", i, "err:", e.message);
+      debug.push("i" + i + " err:" + e.message);
     }
     await new Promise((res) => setTimeout(res, 2e3));
   }
+  console.log("BOOTSTRAP_DEBUG", workerName, panelBase, loginOk ? "OK" : "FAIL", debug.join(" | "));
   if (!loginOk) {
-    console.warn("bootstrap did not complete within poll window for", workerName);
+    try {
+      await fetch(api2 + "/accounts/" + accountId + "/storage/kv/namespaces/" + kv + "/values/bootdebug:" + workerName, {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token, "content-type": "text/plain" },
+        body: panelBase + "\n" + debug.join("\n")
+      });
+    } catch {
+    }
   }
   await fetch(api2 + "/accounts/" + accountId + "/workers/scripts/" + workerName + "/queues", {
     method: "POST",

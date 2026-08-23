@@ -162,12 +162,12 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. Wait for tables then insert admin directly via /api/auth/setup
-  // (which accepts username+password in the body and only succeeds if no
-  // admins exist yet). We poll both setup + login until login works.
+  // 10b. Wait for tables then insert admin directly via /api/auth/setup.
+  // We persist debug info into KV so we can inspect it after the fact.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
+  const debug: string[] = [];
   let loginOk = false;
   for (let i = 0; i < 15; i++) {
     try {
@@ -182,18 +182,24 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
         headers: { "content-type": "application/json" },
         body: loginBody,
       });
-      if (lr.ok) { loginOk = true; break; }
-      if (i % 3 === 0) {
-        const ltext = await lr.text().catch(() => "");
-        console.log("bootstrap poll", i, "setup=", sr.status, stext.slice(0,80), "login=", lr.status, ltext.slice(0,80));
-      }
+      if (lr.ok) { loginOk = true; debug.push("iter" + i + " OK"); break; }
+      const ltext = await lr.text().catch(() => "");
+      debug.push("i" + i + " s=" + sr.status + "/" + stext.slice(0, 40) + " l=" + lr.status + "/" + ltext.slice(0, 40));
     } catch (e) {
-      if (i % 3 === 0) console.log("bootstrap poll", i, "err:", (e as Error).message);
+      debug.push("i" + i + " err:" + (e as Error).message);
     }
     await new Promise((res) => setTimeout(res, 2000));
   }
+  console.log("BOOTSTRAP_DEBUG", workerName, panelBase, loginOk ? "OK" : "FAIL", debug.join(" | "));
   if (!loginOk) {
-    console.warn("bootstrap did not complete within poll window for", workerName);
+    // Store debug in KV so we can inspect it after the worker invocation ends.
+    try {
+      await fetch(api + "/accounts/" + accountId + "/storage/kv/namespaces/" + kv + "/values/bootdebug:" + workerName, {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token, "content-type": "text/plain" },
+        body: panelBase + "\n" + debug.join("\n"),
+      });
+    } catch { /* ignore */ }
   }
 
   // 11. register queue consumer
