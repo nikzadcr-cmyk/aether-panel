@@ -160,25 +160,25 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. hit the worker's auto-bootstrap endpoint so the admin user is
-  // created immediately using ADMIN_BOOTSTRAP_PASSWORD. Retry aggressively
-  // while the worker first propagates to the edge (can take 5-15s).
+  // 10b. Bootstrap admin via the worker endpoint. The worker may answer
+  // before D1 schema has finished propagating, in which case auto-bootstrap
+  // returns ok:true but the row isn't actually written. We verify by logging
+  // in; if that fails, we keep calling auto-bootstrap for up to ~60s.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
-  let bootstrapped = false;
-  for (let i = 0; i < 20; i++) {
+  const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
+  for (let i = 0; i < 40; i++) {
     try {
-      const r = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
-      if (r.ok) {
-        const j = (await r.json().catch(() => ({}))) as { ok?: boolean };
-        if (j.ok) { bootstrapped = true; break; }
-      }
+      await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" }).catch(() => {});
+      const lr = await fetch(panelBase + "/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: adminLogin,
+      });
+      if (lr.ok) break;
     } catch {
       /* retry */
     }
     await new Promise((res) => setTimeout(res, 1500));
-  }
-  if (!bootstrapped) {
-    console.error("auto-bootstrap did not complete in time for", panelBase);
   }
 
   // 11. register queue consumer
