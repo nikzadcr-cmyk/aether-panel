@@ -162,26 +162,32 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10. apply D1 schema (idempotent)
   await applyD1Schema(api, headers, accountId, d1);
 
-  // 10b. Wait briefly (max ~15s) for auto-bootstrap to succeed. The worker
-  // itself only creates the admin when D1 is ready; we keep trying until
-  // login succeeds, but cap the wait so we don't exceed Worker subrequest
-  // limits. If D1 takes longer than this, the panel is still deployed and
-  // the admin will be created on the first user visit.
+  // 10b. Wait for auto-bootstrap + login. We just deployed the worker, and
+  // D1 binding can take a few seconds to propagate. The /auto-bootstrap
+  // endpoint itself retries internally for ~6s; we poll both endpoints
+  // here. Total cap is ~45s — within the waitUntil budget (30 min) but
+  // enough for D1 on a fresh database.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
-  for (let i = 0; i < 10; i++) {
+  let loginOk = false;
+  for (let i = 0; i < 18; i++) {
     try {
-      await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" }).catch(() => {});
-      const lr = await fetch(panelBase + "/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: adminLogin,
-      });
-      if (lr.ok) break;
+      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
+      if (ab.ok) {
+        const lr = await fetch(panelBase + "/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: adminLogin,
+        });
+        if (lr.ok) { loginOk = true; break; }
+      }
     } catch {
       /* retry */
     }
-    await new Promise((res) => setTimeout(res, 1500));
+    await new Promise((res) => setTimeout(res, 2500));
+  }
+  if (!loginOk) {
+    console.warn("bootstrap did not complete within poll window for", workerName);
   }
 
   // 11. register queue consumer

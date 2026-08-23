@@ -48,7 +48,17 @@ app.route("/api/system", systemRoutes);
 
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN) return c.text("bot disabled", 404);
-  return handleTelegramUpdate(c.req.raw, c.env);
+  const ctx = c.executionCtx;
+  // Some flows (panel build) run for 30-60s. We MUST return 200 to
+  // Telegram immediately (otherwise it retries) and run the long work
+  // in waitUntil which is allowed up to 30 minutes on Workers.
+  const update = await c.req.raw.clone().json();
+  ctx.waitUntil(handleTelegramUpdate(new Request(c.req.raw.url, {
+    method: "POST",
+    headers: c.req.raw.headers,
+    body: JSON.stringify(update),
+  }), c.env));
+  return c.text("ok");
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, version: c.env.APP_VERSION, ts: Date.now() }));
