@@ -6537,12 +6537,19 @@ app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN)
     return c.text("bot disabled", 404);
   const ctx = c.executionCtx;
-  const update = await c.req.raw.clone().json();
-  ctx.waitUntil(handleTelegramUpdate(new Request(c.req.raw.url, {
-    method: "POST",
-    headers: c.req.raw.headers,
-    body: JSON.stringify(update)
-  }), c.env));
+  const bodyText = await c.req.raw.text();
+  ctx.waitUntil((async () => {
+    try {
+      const fakeReq = new Request("https://internal/tg/webhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: bodyText
+      });
+      await handleTelegramUpdate(fakeReq, c.env);
+    } catch (e) {
+      console.error("tg webhook waitUntil error", e);
+    }
+  })());
   return c.text("ok");
 });
 app.get("/api/health", (c) => c.json({ ok: true, version: c.env.APP_VERSION, ts: Date.now() }));

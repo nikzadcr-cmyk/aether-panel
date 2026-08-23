@@ -49,15 +49,23 @@ app.route("/api/system", systemRoutes);
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN) return c.text("bot disabled", 404);
   const ctx = c.executionCtx;
-  // Some flows (panel build) run for 30-60s. We MUST return 200 to
-  // Telegram immediately (otherwise it retries) and run the long work
-  // in waitUntil which is allowed up to 30 minutes on Workers.
-  const update = await c.req.raw.clone().json();
-  ctx.waitUntil(handleTelegramUpdate(new Request(c.req.raw.url, {
-    method: "POST",
-    headers: c.req.raw.headers,
-    body: JSON.stringify(update),
-  }), c.env));
+  // Some flows (panel build) run for 30-60s. We parse the body here so the
+  // downstream handler doesn't need to touch the request stream, then we
+  // return 200 to Telegram immediately and run the work in waitUntil
+  // (allowed up to 30 minutes on Workers).
+  const bodyText = await c.req.raw.text();
+  ctx.waitUntil((async () => {
+    try {
+      const fakeReq = new Request("https://internal/tg/webhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: bodyText,
+      });
+      await handleTelegramUpdate(fakeReq, c.env);
+    } catch (e) {
+      console.error("tg webhook waitUntil error", e);
+    }
+  })());
   return c.text("ok");
 });
 
