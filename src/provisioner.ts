@@ -27,11 +27,13 @@ export interface ProvisionResult {
   error?: string;
 }
 
-// We use raw.githubusercontent.com with a short cache-busting query so
-// newly-provisioned panels always run the latest committed bundle. jsDelivr
-// caches @main aggressively and was serving stale code.
+// We pin to a specific commit so newly-provisioned panels always run the
+// exact bundle we built+tested. raw.githubusercontent.com caches @main for
+// ~5 minutes which caused users to deploy stale bundles on first build.
+// Bump this to git rev-parse HEAD after every release.
+const BUNDLE_REF = "67fa49b1340da06a8bf48eee6a0477f3554025de";
 const BUNDLE_BASE =
-  "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/";
+  "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
 const WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
 const SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";
 
