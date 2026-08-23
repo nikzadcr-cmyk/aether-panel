@@ -4230,9 +4230,13 @@ async function provisionAccount(input) {
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 24; i++) {
     try {
-      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
+      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" }
+      });
+      const abText = await ab.text().catch(() => "");
       if (ab.ok) {
         const lr = await fetch(panelBase + "/api/auth/login", {
           method: "POST",
@@ -4241,12 +4245,20 @@ async function provisionAccount(input) {
         });
         if (lr.ok) {
           loginOk = true;
+          console.log("bootstrap ok after", i, "iters");
           break;
         }
+        const lrText = await lr.text().catch(() => "");
+        if (i % 4 === 0)
+          console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0, 80), "lr=", lr.status, lrText.slice(0, 80));
+      } else if (i % 4 === 0) {
+        console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0, 100));
       }
-    } catch {
+    } catch (e) {
+      if (i % 4 === 0)
+        console.warn("bootstrap poll", i, "err:", e.message);
     }
-    await new Promise((res) => setTimeout(res, 2500));
+    await new Promise((res) => setTimeout(res, 2e3));
   }
   if (!loginOk) {
     console.warn("bootstrap did not complete within poll window for", workerName);
@@ -4425,22 +4437,47 @@ async function applyD1Schema(api2, headers, accountId, d1Id) {
   let sql = await res.text();
   sql = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
   const stmts = sql.split(/;(?:\s|\n|$)/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.startsWith("PRAGMA"));
-  for (const stmt of stmts) {
-    try {
-      const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ sql: stmt })
-      });
-      if (!r.ok) {
-        const body = await r.text().catch(() => "");
-        if (!/already exists|duplicate/i.test(body)) {
-          console.warn("D1 schema stmt failed:", stmt.slice(0, 80), body.slice(0, 200));
+  if (stmts.length === 0)
+    return;
+  try {
+    const r = await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sql: stmts.join(";\n") + ";" })
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      if (!/already exists|duplicate/i.test(body)) {
+        console.warn("D1 schema batch failed, falling back to per-statement:", body.slice(0, 300));
+        for (const stmt of stmts) {
+          try {
+            await fetch(api2 + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ sql: stmt })
+            });
+          } catch (e) {
+            console.warn("D1 schema stmt failed:", e.message);
+          }
         }
       }
-    } catch (e) {
-      console.warn("D1 schema fetch error:", e.message);
+    } else {
+      const j = await r.json();
+      if (j.errors?.length) {
+        const realErr = j.errors.find((e) => !/already exists|duplicate/i.test(e.message));
+        if (realErr)
+          console.warn("D1 schema error:", realErr.message);
+      }
+      if (Array.isArray(j.result)) {
+        j.result.forEach((rr, i) => {
+          if (rr && rr.success === false && rr.error && !/already exists|duplicate/i.test(rr.error)) {
+            console.warn("D1 stmt[" + i + "] failed:", rr.error, stmts[i]?.slice(0, 80));
+          }
+        });
+      }
     }
+  } catch (e) {
+    console.warn("D1 schema fetch error:", e.message);
   }
 }
 function randomSuffix(n) {

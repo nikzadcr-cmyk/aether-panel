@@ -165,26 +165,33 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10b. Wait for auto-bootstrap + login. We just deployed the worker, and
   // D1 binding can take a few seconds to propagate. The /auto-bootstrap
   // endpoint itself retries internally for ~6s; we poll both endpoints
-  // here. Total cap is ~45s — within the waitUntil budget (30 min) but
-  // enough for D1 on a fresh database.
+  // here.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 24; i++) {
     try {
-      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", { method: "POST" });
+      const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      });
+      const abText = await ab.text().catch(() => "");
       if (ab.ok) {
         const lr = await fetch(panelBase + "/api/auth/login", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: adminLogin,
         });
-        if (lr.ok) { loginOk = true; break; }
+        if (lr.ok) { loginOk = true; console.log("bootstrap ok after", i, "iters"); break; }
+        const lrText = await lr.text().catch(() => "");
+        if (i % 4 === 0) console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0,80), "lr=", lr.status, lrText.slice(0,80));
+      } else if (i % 4 === 0) {
+        console.warn("bootstrap poll", i, "ab=", ab.status, abText.slice(0, 100));
       }
-    } catch {
-      /* retry */
+    } catch (e) {
+      if (i % 4 === 0) console.warn("bootstrap poll", i, "err:", (e as Error).message);
     }
-    await new Promise((res) => setTimeout(res, 2500));
+    await new Promise((res) => setTimeout(res, 2000));
   }
   if (!loginOk) {
     console.warn("bootstrap did not complete within poll window for", workerName);
@@ -389,28 +396,53 @@ async function applyD1Schema(
   // strip SQL comments (lines starting with --) which D1 rejects
   sql = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
   // Split on semicolons; keep statements non-empty. The D1 query endpoint
-  // accepts one statement per call.
+  // accepts multiple statements in one call, which is much faster than one
+  // HTTP request per statement.
   const stmts = sql
     .split(/;(?:\s|\n|$)/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0 && !s.startsWith("PRAGMA"));
-  for (const stmt of stmts) {
-    try {
-      const r = await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ sql: stmt }),
-      });
-      if (!r.ok) {
-        const body = await r.text().catch(() => "");
-        // "already exists" is fine; log others but continue
-        if (!/already exists|duplicate/i.test(body)) {
-          console.warn("D1 schema stmt failed:", stmt.slice(0, 80), body.slice(0, 200));
+  if (stmts.length === 0) return;
+  // Send in one batched call — D1 returns per-statement results.
+  try {
+    const r = await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sql: stmts.join(";\n") + ";" }),
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      if (!/already exists|duplicate/i.test(body)) {
+        console.warn("D1 schema batch failed, falling back to per-statement:", body.slice(0, 300));
+        // Fallback: one at a time so one bad statement doesn't kill the rest.
+        for (const stmt of stmts) {
+          try {
+            await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ sql: stmt }),
+            });
+          } catch (e) {
+            console.warn("D1 schema stmt failed:", (e as Error).message);
+          }
         }
       }
-    } catch (e) {
-      console.warn("D1 schema fetch error:", (e as Error).message);
+    } else {
+      const j = (await r.json()) as { success?: boolean; errors?: { message: string }[]; result?: Array<{ success: boolean; error?: string }> };
+      if (j.errors?.length) {
+        const realErr = j.errors.find((e) => !/already exists|duplicate/i.test(e.message));
+        if (realErr) console.warn("D1 schema error:", realErr.message);
+      }
+      if (Array.isArray(j.result)) {
+        j.result.forEach((rr, i) => {
+          if (rr && rr.success === false && rr.error && !/already exists|duplicate/i.test(rr.error)) {
+            console.warn("D1 stmt[" + i + "] failed:", rr.error, stmts[i]?.slice(0, 80));
+          }
+        });
+      }
     }
+  } catch (e) {
+    console.warn("D1 schema fetch error:", (e as Error).message);
   }
 }
 
