@@ -165,11 +165,11 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 10b. Wait for auto-bootstrap + login. We just deployed the worker, and
   // D1 binding can take a few seconds to propagate. The /auto-bootstrap
   // endpoint itself retries internally for ~6s; we poll both endpoints
-  // here.
+  // here. Cap at ~20s (10 iters × 2s) to stay inside Telegram's 60s window.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 10; i++) {
     try {
       const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", {
         method: "POST",

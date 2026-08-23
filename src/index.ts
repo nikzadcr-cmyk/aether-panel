@@ -48,25 +48,11 @@ app.route("/api/system", systemRoutes);
 
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN) return c.text("bot disabled", 404);
-  const ctx = c.executionCtx;
-  // Some flows (panel build) run for 30-60s. We parse the body here so the
-  // downstream handler doesn't need to touch the request stream, then we
-  // return 200 to Telegram immediately and run the work in waitUntil
-  // (allowed up to 30 minutes on Workers).
-  const bodyText = await c.req.raw.text();
-  ctx.waitUntil((async () => {
-    try {
-      const fakeReq = new Request("https://internal/tg/webhook", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: bodyText,
-      });
-      await handleTelegramUpdate(fakeReq, c.env);
-    } catch (e) {
-      console.error("tg webhook waitUntil error", e);
-    }
-  })());
-  return c.text("ok");
+  // Telegram allows up to 60s for webhook responses. A full panel build
+  // takes ~10-15s (provision resources + bootstrap), well within that
+  // window. We await directly so the handler stays alive long enough to
+  // complete the build AND verify admin login.
+  return handleTelegramUpdate(c.req.raw, c.env);
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, version: c.env.APP_VERSION, ts: Date.now() }));

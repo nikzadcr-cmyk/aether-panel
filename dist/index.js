@@ -4230,7 +4230,7 @@ async function provisionAccount(input) {
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const adminLogin = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 10; i++) {
     try {
       const ab = await fetch(panelBase + "/api/auth/auto-bootstrap", {
         method: "POST",
@@ -6573,21 +6573,7 @@ app.route("/api/system", systemRoutes);
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN)
     return c.text("bot disabled", 404);
-  const ctx = c.executionCtx;
-  const bodyText = await c.req.raw.text();
-  ctx.waitUntil((async () => {
-    try {
-      const fakeReq = new Request("https://internal/tg/webhook", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: bodyText
-      });
-      await handleTelegramUpdate(fakeReq, c.env);
-    } catch (e) {
-      console.error("tg webhook waitUntil error", e);
-    }
-  })());
-  return c.text("ok");
+  return handleTelegramUpdate(c.req.raw, c.env);
 });
 app.get("/api/health", (c) => c.json({ ok: true, version: c.env.APP_VERSION, ts: Date.now() }));
 app.get("/api/traffic/:username", async (c) => {
