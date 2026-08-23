@@ -98,7 +98,7 @@ authRoutes.post("/2fa/enroll", requireAuth, async (c) => {
   const secret = generateTotpSecret();
   await c.env.DB.prepare("UPDATE admins SET totp_secret = ? WHERE id = ?").bind(secret, adminId).run();
   const row = await c.env.DB.prepare("SELECT username FROM admins WHERE id = ?").bind(adminId).first<{ username: string }>();
-  return c.json({ secret, uri: totpUri(secret, "Aether Panel", row!.username) });
+  return c.json({ secret, uri: totpUri(secret, "Nikzad Panel", row!.username) });
 });
 
 authRoutes.post("/2fa/disable", requireAuth, async (c) => {

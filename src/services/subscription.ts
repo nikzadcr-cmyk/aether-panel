@@ -16,6 +16,7 @@ export interface SubContext {
   host: string;          // Worker hostname (used as SNI / Host header)
   port: number;          // default public TLS port
   tls: boolean;
+  cleanIps?: string[];   // override default clean IP pool (from settings)
 }
 
 const TLS_PORTS = new Set(["443", "2053", "2083", "2087", "2096", "8443"]);
@@ -45,7 +46,7 @@ export async function generateSubscription(
   const noise = [
     "# Sub Update: OK",
     "# Random Code: " + Math.random().toString(36).slice(2, 10),
-    "# Aether Panel",
+    "# Nikzad Panel",
     "",
   ].join("\n");
   const plain = noise + links.join("\n");
@@ -62,7 +63,11 @@ export function buildLinks(user: UserRow, ctx: SubContext): string[] {
   const fp = user.fingerprint || "chrome";
   const path = "/" + Math.random().toString(36).slice(2, 12);
   const pathEnc = encodeURIComponent(path);
-  const ips = parseIpsField(user.ips).slice(0, 30);
+  const userIps = parseIpsField(user.ips);
+  const pool = userIps.length
+    ? userIps
+    : (ctx.cleanIps && ctx.cleanIps.length ? ctx.cleanIps : DEFAULT_CLEAN_IPS);
+  const ips = pool.slice(0, 30);
   const ports = String(user.port || "443").split(",").map((p) => p.trim()).filter(Boolean);
   const connType = String(user.connection_type || "vless").toLowerCase();
   const enableVless = connType.includes("vless") || !connType.includes("trojan");
@@ -76,7 +81,7 @@ export function buildLinks(user: UserRow, ctx: SubContext): string[] {
     for (const portStr of ports) {
       const isTls = TLS_PORTS.has(portStr);
       const sec = isTls ? "tls" : "none";
-      const remark = "Aether|" + user.username + "|" + ip;
+      const remark = "Nikzad|" + user.username + "|" + ip;
       const encRemark = encodeURIComponent(remark);
       if (enableVless) {
         out.push(
@@ -122,15 +127,22 @@ export function buildLinks(user: UserRow, ctx: SubContext): string[] {
   return out;
 }
 
+function cleanIpFor(ctx: SubContext, user: UserRow): string {
+  const userIps = parseIpsField(user.ips);
+  if (userIps.length) return userIps[0]!;
+  const pool = ctx.cleanIps && ctx.cleanIps.length ? ctx.cleanIps : DEFAULT_CLEAN_IPS;
+  return pool[Math.floor(Math.random() * pool.length)]!;
+}
+
 function buildClash(user: UserRow, ctx: SubContext, _links: string[]): string {
   const host = ctx.host;
   const sni = user.sni_host || host;
-  const ip = parseIpsField(user.ips)[0] || DEFAULT_CLEAN_IPS[0];
+  const ip = cleanIpFor(ctx, user);
   const directDomains = parseList(user.route_direct);
   const blockDomains = parseList(user.route_block);
   const directRules = directDomains.map((d) => "  - DOMAIN-SUFFIX," + d + ",DIRECT").join("\n");
   const blockRules = blockDomains.map((d) => "  - DOMAIN-SUFFIX," + d + ",REJECT").join("\n");
-  return "# Aether Panel Clash configuration\n" +
+  return "# Nikzad Panel Clash configuration\n" +
     "mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\nipv6: true\n" +
     "dns:\n  enable: true\n  listen: 0.0.0.0:53\n" +
     "  default-nameserver: [1.1.1.1, 8.8.8.8]\n" +
@@ -150,7 +162,7 @@ function buildClash(user: UserRow, ctx: SubContext, _links: string[]): string {
 
 function buildSingBox(user: UserRow, ctx: SubContext, _links: string[]): unknown {
   const sni = user.sni_host || ctx.host;
-  const ip = parseIpsField(user.ips)[0] || DEFAULT_CLEAN_IPS[0];
+  const ip = cleanIpFor(ctx, user);
   return {
     log: { level: "info" },
     dns: {

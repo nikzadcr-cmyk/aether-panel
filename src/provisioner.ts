@@ -118,7 +118,7 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
         name: "RATE_LIMIT",
         class_name: "RateLimiter",
       },
-      { type: "plain_text", name: "APP_NAME", text: "Aether Panel" },
+      { type: "plain_text", name: "APP_NAME", text: "Nikzad Panel" },
       { type: "plain_text", name: "APP_VERSION", text: "0.1.0" },
       {
         type: "plain_text",

@@ -18,6 +18,7 @@ import { authRoutes } from "./routes/auth.js";
 import { userRoutes } from "./routes/users.js";
 import { proxyRoutes, syncPool } from "./routes/proxies.js";
 import { systemRoutes } from "./routes/system.js";
+import { scannerRoutes } from "./routes/scanner.js";
 import { handleTelegramUpdate } from "./telegram/bot.js";
 import { panelHtml, loginHtml, notFoundHtml, statusHtml } from "./ui/panel.js";
 import { generateSubscription } from "./services/subscription.js";
@@ -45,6 +46,7 @@ app.route("/api/auth", authRoutes);
 app.route("/api/users", userRoutes);
 app.route("/api/proxies", proxyRoutes);
 app.route("/api/system", systemRoutes);
+app.route("/api/scanner", scannerRoutes);
 
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN) return c.text("bot disabled", 404);
@@ -81,6 +83,14 @@ app.get("/api/stats", async (c) => {
 });
 
 /* ---------------- Subscription & status ---------------- */
+async function getCleanIps(env: Env): Promise<string[] | undefined> {
+  const r = await env.DB.prepare("SELECT value FROM settings WHERE key='clean_ips'").first<{ value: string }>();
+  if (r?.value) {
+    try { const arr = JSON.parse(r.value); if (Array.isArray(arr) && arr.length) return arr; } catch {}
+  }
+  return undefined;
+}
+
 app.get("/sub/:user", async (c) => {
   const username = decodeURIComponent(c.req.param("user"));
   const row = await c.env.DB.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE OR uuid = ?").bind(username, username).first();
@@ -90,6 +100,7 @@ app.get("/sub/:user", async (c) => {
     host: new URL(c.req.url).hostname,
     port: (row as { port?: number }).port ?? 443,
     tls: (row as { tls?: string }).tls !== "off",
+    cleanIps: await getCleanIps(c.env),
   }, fmt);
   // Increment request count (skip for browsers)
   const ua = (c.req.header("user-agent") || "").toLowerCase();
@@ -114,6 +125,7 @@ app.get("/status/:user", async (c) => {
     host: new URL(c.req.url).hostname,
     port: (row as { port?: number }).port ?? 443,
     tls: (row as { tls?: string }).tls !== "off",
+    cleanIps: await getCleanIps(c.env),
   }, "raw");
   return c.html(statusHtml(row as never, body));
 });

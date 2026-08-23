@@ -345,7 +345,7 @@ async function handleMenuAction(env: Env, chat: Chat, messageId: number, action:
   if (action === "help") {
     await editText(
       env, chat, messageId,
-      "⚡️ <b>Aether Panel Bot</b>\n\n" +
+      "⚡️ <b>Nikzad Panel Bot</b>\n\n" +
       "با این ربات می‌توانی پنل اختصاصی VLESS/Trojan/VMess روی Cloudflare Worker بسازی.\n\n" +
       "• <b>ثبت حساب</b>: یک API Token می‌دهی، ربات در KV نگه می‌دارد.\n" +
       "• <b>ساخت پنل</b>: روی هر حساب یک ورکر + D1 + KV می‌سازد.\n" +
@@ -366,7 +366,7 @@ async function handleMsg(msg: Msg, env: Env): Promise<Response> {
 
   if (text === "/start" || text === "/menu") {
     await clearState(env, chatId);
-    await sendMessage(env, chatId, "👋 <b>به ربات Aether Panel خوش آمدی!</b>\nیکی از گزینه‌های منو را انتخاب کن:", { reply_markup: HOME_KB });
+    await sendMessage(env, chatId, "👋 <b>به ربات Nikzad Panel خوش آمدی!</b>\nیکی از گزینه‌های منو را انتخاب کن:", { reply_markup: HOME_KB });
     return new Response("ok");
   }
   if (text === "/cancel" || text === "/stop") {

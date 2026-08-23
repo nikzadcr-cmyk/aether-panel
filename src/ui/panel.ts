@@ -16,7 +16,7 @@ function iconSvg(): string {
 export function loginHtml(): string {
   return `<!doctype html><html lang="fa" dir="rtl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Aether — ورود</title>
+<title>Nikzad Panel — ورود</title>
 <link rel="icon" href="/icon.svg"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"/>
 <script src="https://cdn.tailwindcss.com"></script>
@@ -38,9 +38,9 @@ export function loginHtml(): string {
 <div class="w-full max-w-md">
   <div class="text-center mb-8 float">
     <div class="inline-block logo-pulse">
-      <img src="/icon.svg" class="w-20 h-20 mx-auto" alt="Aether"/>
+      <img src="/icon.svg" class="w-20 h-20 mx-auto" alt="Nikzad"/>
     </div>
-    <h1 class="text-3xl font-black mt-4 bg-gradient-to-l from-cyan-300 to-sky-500 bg-clip-text text-transparent">AETHER PANEL</h1>
+    <h1 class="text-3xl font-black mt-4 bg-gradient-to-l from-cyan-300 via-indigo-400 to-violet-400 bg-clip-text text-transparent">NIKZAD PANEL</h1>
     <p class="text-slate-400 text-sm mt-1">Cloudflare Worker · D1 · Durable Objects</p>
   </div>
   <div class="glass rounded-3xl p-8 shadow-2xl shadow-cyan-500/5">
@@ -59,7 +59,7 @@ export function loginHtml(): string {
       <p id="err" class="text-rose-400 text-sm text-center min-h-[1.25rem]"></p>
     </form>
   </div>
-  <p class="text-center text-slate-600 text-xs mt-6">Aether Panel v0.1 · MIT licensed</p>
+  <p class="text-center text-slate-600 text-xs mt-6">Nikzad Panel v1.0 · MIT licensed</p>
 </div>
 <script>
 f.addEventListener('submit', async function(e){
@@ -83,7 +83,7 @@ export function panelHtml(version: string, bootstrap = false): string {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Aether Panel</title>
+<title>Nikzad Panel</title>
 <link rel="icon" href="/icon.svg"/>
 <link rel="manifest" href="/manifest.json"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"/>
@@ -143,7 +143,7 @@ export function panelHtml(version: string, bootstrap = false): string {
     .brand b { font-size:14px; }
     .brand small { font-size:8.5px; }
     .brand img { width:30px; height:30px; }
-    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
+    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(5,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
     .bottomnav .nav-item { flex-direction:column; gap:2px; padding:7px 4px; font-size:10px; border-radius:12px; justify-content:center; }
     .bottomnav .nav-item svg { width:19px; height:19px; }
     main.app-main { padding:14px 12px 96px !important; }
@@ -285,7 +285,7 @@ export function panelHtml(version: string, bootstrap = false): string {
   <div class="glass rounded-3xl p-8 w-full max-w-md">
     <div class="text-center mb-6">
       <img src="/icon.svg" class="w-16 h-16 mx-auto mb-3" alt=""/>
-      <h1 class="text-2xl font-black bg-gradient-to-l from-cyan-300 to-sky-500 bg-clip-text text-transparent">راه‌اندازی Aether</h1>
+      <h1 class="text-2xl font-black bg-gradient-to-l from-cyan-300 via-indigo-400 to-violet-400 bg-clip-text text-transparent">راه‌اندازی Nikzad</h1>
       <p class="text-sm text-slate-400 mt-1">اولین ادمین را بساز</p>
     </div>
     <div class="space-y-3">
@@ -302,7 +302,7 @@ export function panelHtml(version: string, bootstrap = false): string {
     <div class="inner">
       <a class="brand" href="/panel">
         <img src="/icon.svg" alt=""/>
-        <span><b>AETHER PANEL</b><small>v${version}</small></span>
+        <span><b>NIKZAD PANEL</b><small>v${version}</small></span>
       </a>
       <nav class="topnav">
         <div class="nav-item active" data-view="dashboard">
@@ -316,6 +316,10 @@ export function panelHtml(version: string, bootstrap = false): string {
         <div class="nav-item" data-view="proxies">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           استخر پروکسی
+        </div>
+        <div class="nav-item" data-view="scanner">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/><circle cx="12" cy="12" r="9" opacity="0.25"/></svg>
+          اسکنر
         </div>
         <div class="nav-item" data-view="settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -447,6 +451,66 @@ export function panelHtml(version: string, bootstrap = false): string {
       </div>
     </section>
 
+    <!-- SCANNER -->
+    <section data-page="scanner" style="display:none">
+      <div class="flex gap-2 mb-4">
+        <div class="tab active" data-scantab="ip">🌐 اسکنر IP تمیز</div>
+        <div class="tab" data-scantab="proxy">🛡 اسکنر پروکسی</div>
+      </div>
+
+      <div data-scanpane="ip">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1">پیدا کردن سریع‌ترین IP کلودفلر</h2>
+          <p class="text-xs text-slate-400 mb-4">این ابزار با اتصال TCP مستقیم از داخل ورکر به صدها IP کلودفلر، سریع‌ترین آن‌ها را بر اساس تأخیر پیدا می‌کند. می‌توانی IPهای دلخواه خودت را هم وارد کنی.</p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <select id="ipscan-port" class="input" style="max-width:140px">
+              <option value="443">پورت 443</option>
+              <option value="2053">2053</option>
+              <option value="2083">2083</option>
+              <option value="2087">2087</option>
+              <option value="2096">2096</option>
+              <option value="8443">8443</option>
+              <option value="80">80 (HTTP)</option>
+              <option value="8080">8080</option>
+            </select>
+            <button id="ipscan-preset" class="btn btn-ghost">بارگذاری IPهای پیش‌فرض</button>
+            <button id="ipscan-run" class="btn btn-primary">شروع اسکن</button>
+            <button id="ipscan-save" class="btn btn-violet" disabled>ذخیره IPهای برتر</button>
+          </div>
+          <textarea id="ipscan-list" class="input mono" rows="4" dir="ltr" style="text-align:left;font-size:11px" placeholder="هر IP در یک خط..."></textarea>
+          <div id="ipscan-progress" class="text-xs text-slate-400 mt-3"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">نتایج</h3>
+            <span id="ipscan-count" class="text-xs text-slate-400">—</span>
+          </div>
+          <div id="ipscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+
+      <div data-scanpane="proxy" style="display:none">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1">تست پروکسی‌ها</h2>
+          <p class="text-xs text-slate-400 mb-4">پروتکل‌های SOCKS4، SOCKS5 و HTTP پشتیبانی می‌شوند. فرمت: <span class="mono text-cyan-300">socks5://user:pass@host:port</span></p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <input id="pscan-test" class="input" placeholder="تست از طریق: 1.1.1.1:443" value="1.1.1.1:443" style="max-width:220px"/>
+            <button id="pscan-run" class="btn btn-primary">شروع اسکن</button>
+            <button id="pscan-import" class="btn btn-emerald">افزودن سالم‌ها به استخر</button>
+          </div>
+          <textarea id="pscan-list" class="input mono" rows="6" dir="ltr" style="text-align:left;font-size:11px" placeholder="socks5://1.2.3.4:1080&#10;socks5://user:pass@host:1080&#10;http://user:pass@host:8080"></textarea>
+          <div id="pscan-progress" class="text-xs text-slate-400 mt-3"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">نتایج</h3>
+            <span id="pscan-count" class="text-xs text-slate-400">—</span>
+          </div>
+          <div id="pscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- SETTINGS -->
     <section data-page="settings" style="display:none">
       <div class="grid md:grid-cols-2 gap-4">
@@ -496,6 +560,10 @@ export function panelHtml(version: string, bootstrap = false): string {
     <div class="nav-item" data-view="proxies">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       پروکسی
+    </div>
+    <div class="nav-item" data-view="scanner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>
+      اسکنر
     </div>
     <div class="nav-item" data-view="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -694,6 +762,7 @@ function go(view){
   if (view === 'dashboard') loadDashboard();
   if (view === 'users') loadUsers();
   if (view === 'proxies') loadProxies();
+  if (view === 'scanner') initScanner();
 }
 document.querySelectorAll('.nav-item').forEach(function(n){ n.addEventListener('click', function(){
   go(n.dataset.view);
@@ -1084,6 +1153,115 @@ document.getElementById('proxy-health').addEventListener('click', function(){
 document.getElementById('proxy-reload').addEventListener('click', function(){
   API.post('/api/proxies/pool/reload', {}).then(function(r){ toast(r.active + ' پروکسی همگام‌سازی شد'); }).catch(function(e){ toast(e.message,'error'); });
 });
+
+/* ---------- scanner ---------- */
+var _scanInit = false;
+function initScanner(){
+  if (_scanInit) return;
+  _scanInit = true;
+  document.querySelectorAll('[data-scantab]').forEach(function(t){
+    t.addEventListener('click', function(){
+      document.querySelectorAll('[data-scantab]').forEach(function(x){ x.classList.toggle('active', x === t); });
+      var which = t.dataset.scantab;
+      document.querySelectorAll('[data-scanpane]').forEach(function(p){
+        p.style.display = p.dataset.scanpane === which ? '' : 'none';
+      });
+    });
+  });
+  document.getElementById('ipscan-preset').addEventListener('click', function(){
+    API.get('/api/scanner/preset').then(function(r){
+      document.getElementById('ipscan-list').value = r.ips.join('\\n');
+    });
+  });
+  document.getElementById('ipscan-run').addEventListener('click', runIpScan);
+  document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
+  document.getElementById('pscan-run').addEventListener('click', runProxyScan);
+  document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
+}
+var _scanAliveIps = [];
+async function runIpScan(){
+  var raw = document.getElementById('ipscan-list').value;
+  var ips = raw.split(/[\\s,]+/).map(function(x){return x.trim();}).filter(Boolean);
+  var port = parseInt(document.getElementById('ipscan-port').value, 10) || 443;
+  if (!ips.length) return toast('لیست IP خالی است', 'error');
+  var btn = document.getElementById('ipscan-run');
+  btn.disabled = true; btn.textContent = 'در حال اسکن...';
+  var prog = document.getElementById('ipscan-progress');
+  prog.textContent = 'اسکن ' + ips.length + ' IP روی پورت ' + port + ' ...';
+  var t0 = Date.now();
+  try {
+    var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    document.getElementById('ipscan-count').textContent = r.alive + ' سالم از ' + r.total + ' در ' + elapsed + 's';
+    prog.textContent = '✅ ' + r.alive + ' پاسخ دادند، ' + r.dead + ' خطا داشتند.';
+    _scanAliveIps = r.top;
+    var rows = r.results.slice().sort(function(a,b){
+      if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
+      return a.ok ? -1 : 1;
+    }).map(function(x){
+      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
+                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
+      return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    }).join('');
+    document.getElementById('ipscan-results').innerHTML =
+      '<table><thead><tr><th>IP</th><th>تأخیر</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('ipscan-save').disabled = r.alive === 0;
+    if (r.alive) toast(r.alive + ' IP سالم پیدا شد');
+  } catch(e){ toast(e.message, 'error'); prog.textContent = 'خطا: ' + e.message; }
+  btn.disabled = false; btn.textContent = 'شروع اسکن';
+}
+async function saveCleanIps(){
+  if (!_scanAliveIps.length) return;
+  var ips = _scanAliveIps.slice(0, 20).map(function(x){return x.target;});
+  try {
+    await API.put('/api/scanner/clean', { ips: ips });
+    toast(ips.length + ' IP به‌عنوان IP تمیز پیش‌فرض ذخیره شد');
+  } catch(e){ toast(e.message, 'error'); }
+}
+var _scanAliveProxies = [];
+async function runProxyScan(){
+  var raw = document.getElementById('pscan-list').value;
+  var proxies = raw.split('\\n').map(function(x){return x.trim();}).filter(Boolean);
+  var target = document.getElementById('pscan-test').value.trim() || '1.1.1.1:443';
+  var parts = target.split(':');
+  if (!proxies.length) return toast('لیست پروکسی خالی است', 'error');
+  var btn = document.getElementById('pscan-run');
+  btn.disabled = true; btn.textContent = 'در حال اسکن...';
+  var prog = document.getElementById('pscan-progress');
+  prog.textContent = 'تست ' + proxies.length + ' پروکسی...';
+  var t0 = Date.now();
+  try {
+    var r = await API.post('/api/scanner/proxies', {
+      proxies: proxies, testHost: parts[0], testPort: parseInt(parts[1],10)||443
+    });
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    document.getElementById('pscan-count').textContent = r.alive + ' سالم از ' + r.total + ' در ' + elapsed + 's';
+    prog.textContent = '✅ ' + r.alive + ' سالم، ' + r.dead + ' ناموفق.';
+    _scanAliveProxies = r.top;
+    var sorted = r.results.slice().sort(function(a,b){
+      if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
+      return a.ok ? -1 : 1;
+    });
+    var rows = sorted.map(function(x){
+      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
+                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
+      return '<tr><td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    }).join('');
+    document.getElementById('pscan-results').innerHTML =
+      '<table><thead><tr><th>پروکسی</th><th>تأخیر</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('pscan-import').disabled = r.alive === 0;
+  } catch(e){ toast(e.message, 'error'); prog.textContent = 'خطا: ' + e.message; }
+  btn.disabled = false; btn.textContent = 'شروع اسکن';
+}
+async function importAliveProxies(){
+  if (!_scanAliveProxies.length) return;
+  var list = _scanAliveProxies.map(function(x){return x.target;});
+  try {
+    var r = await API.post('/api/proxies/import', { list: list, source: 'scanner' });
+    toast(r.imported + ' پروکسی به استخر اضافه شد');
+    loadProxies();
+  } catch(e){ toast(e.message, 'error'); }
+}
 
 /* ---------- modal helpers ---------- */
 function openModal(id){ document.getElementById(id).classList.add('open'); }

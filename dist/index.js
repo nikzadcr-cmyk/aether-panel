@@ -3713,7 +3713,7 @@ authRoutes.post("/2fa/enroll", requireAuth, async (c) => {
   const secret = generateTotpSecret();
   await c.env.DB.prepare("UPDATE admins SET totp_secret = ? WHERE id = ?").bind(secret, adminId).run();
   const row = await c.env.DB.prepare("SELECT username FROM admins WHERE id = ?").bind(adminId).first();
-  return c.json({ secret, uri: totpUri(secret, "Aether Panel", row.username) });
+  return c.json({ secret, uri: totpUri(secret, "Nikzad Panel", row.username) });
 });
 authRoutes.post("/2fa/disable", requireAuth, async (c) => {
   const adminId = c.get("adminId");
@@ -4119,6 +4119,439 @@ systemRoutes.put("/settings", requireRole("owner", "admin"), async (c) => {
   return c.json({ ok: true });
 });
 
+// src/services/scanner.ts
+import { connect as connect2 } from "cloudflare:sockets";
+async function tcpPing(host, port, timeoutMs) {
+  const start = Date.now();
+  const socket = connect2({ hostname: host, port }, { secureTransport: "off", allowHalfOpen: false });
+  let timer;
+  try {
+    await Promise.race([
+      socket.opened,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      })
+    ]);
+    return Date.now() - start;
+  } finally {
+    if (timer)
+      clearTimeout(timer);
+    socket.close().catch(() => {
+    });
+  }
+}
+async function scanIps(opts) {
+  const port = opts.port ?? 443;
+  const concurrency = Math.min(25, Math.max(1, opts.concurrency ?? 12));
+  const timeoutMs = Math.min(8e3, Math.max(1e3, opts.timeoutMs ?? 4e3));
+  const out = [];
+  let cursor = 0;
+  async function worker() {
+    while (cursor < opts.ips.length) {
+      const idx = cursor++;
+      const ip = opts.ips[idx];
+      try {
+        const ms = await tcpPing(ip, port, timeoutMs);
+        out[idx] = { target: ip, ok: true, latencyMs: ms };
+      } catch (e) {
+        out[idx] = { target: ip, ok: false, latencyMs: -1, error: e.message };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return out;
+}
+function parseProxyUri(raw2) {
+  let s = raw2.trim();
+  if (!s)
+    return null;
+  let type = "socks5";
+  if (s.startsWith("socks5://")) {
+    type = "socks5";
+    s = s.slice(9);
+  } else if (s.startsWith("socks4://")) {
+    type = "socks4";
+    s = s.slice(9);
+  } else if (s.startsWith("http://")) {
+    type = "http";
+    s = s.slice(7);
+  } else if (s.startsWith("https://")) {
+    type = "http";
+    s = s.slice(8);
+  }
+  let user, pass;
+  const at = s.lastIndexOf("@");
+  if (at >= 0) {
+    const cred = s.slice(0, at);
+    s = s.slice(at + 1);
+    const ci2 = cred.indexOf(":");
+    if (ci2 >= 0) {
+      user = cred.slice(0, ci2);
+      pass = cred.slice(ci2 + 1);
+    } else
+      user = cred;
+  }
+  s = s.split("/")[0].split("?")[0];
+  const ci = s.lastIndexOf(":");
+  if (ci < 0)
+    return null;
+  const host = s.slice(0, ci);
+  const port = parseInt(s.slice(ci + 1), 10);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535)
+    return null;
+  return { type, host, port, user, pass };
+}
+async function testProxy(p, testHost, testPort, timeoutMs) {
+  const start = Date.now();
+  const socket = connect2({ hostname: p.host, port: p.port }, { secureTransport: "off", allowHalfOpen: false });
+  let timer;
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+  try {
+    await Promise.race([
+      socket.opened,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("connect timeout")), timeoutMs);
+      })
+    ]);
+    if (timer) {
+      clearTimeout(timer);
+      timer = void 0;
+    }
+    if (p.type === "socks5") {
+      await writer.write(new Uint8Array([5, 1, 0]));
+      const hdr = await readExact(reader, 2, timeoutMs);
+      if (hdr[0] !== 5)
+        throw new Error("bad SOCKS5 handshake");
+      if (hdr[1] === 2 && p.user) {
+        const u = new TextEncoder().encode(p.user);
+        const pw = new TextEncoder().encode(p.pass || "");
+        const buf = new Uint8Array(3 + u.length + pw.length);
+        buf.set([1, u.length], 0);
+        buf.set(u, 2);
+        buf[2 + u.length] = pw.length;
+        buf.set(pw, 3 + u.length);
+        await writer.write(buf);
+        const ar = await readExact(reader, 2, timeoutMs);
+        if (ar[1] !== 0)
+          throw new Error("SOCKS5 auth failed");
+      } else if (hdr[1] !== 0) {
+        throw new Error("SOCKS5 requires auth");
+      }
+      const host = new TextEncoder().encode(testHost);
+      const req = new Uint8Array(7 + host.length);
+      req.set([5, 1, 0, 3, host.length], 0);
+      req.set(host, 5);
+      req[5 + host.length] = testPort >> 8 & 255;
+      req[6 + host.length] = testPort & 255;
+      await writer.write(req);
+      const rep = await readExact(reader, 4, timeoutMs);
+      if (rep[1] !== 0)
+        throw new Error("SOCKS5 connect failed (" + rep[1] + ")");
+      const atyp = rep[3];
+      if (atyp === 1)
+        await readExact(reader, 4, timeoutMs);
+      else if (atyp === 4)
+        await readExact(reader, 16, timeoutMs);
+      else if (atyp === 3) {
+        const l = await readExact(reader, 1, timeoutMs);
+        await readExact(reader, l[0], timeoutMs);
+      }
+      await readExact(reader, 2, timeoutMs);
+    } else if (p.type === "socks4") {
+      const ip = testHost.split(".").map((x) => parseInt(x, 10));
+      const buf = new Uint8Array(9);
+      buf.set([
+        4,
+        1,
+        testPort >> 8 & 255,
+        testPort & 255,
+        ip[0] || 0,
+        ip[1] || 0,
+        ip[2] || 0,
+        ip[3] || 0,
+        0
+      ], 0);
+      await writer.write(buf);
+      const r = await readExact(reader, 8, timeoutMs);
+      if (r[1] !== 90)
+        throw new Error("SOCKS4 connect failed (" + r[1] + ")");
+    } else {
+      const auth = p.user ? "Basic " + btoa(p.user + ":" + (p.pass || "")) : "";
+      const req = "CONNECT " + testHost + ":" + testPort + " HTTP/1.1\r\nHost: " + testHost + ":" + testPort + "\r\n" + (auth ? "Proxy-Authorization: " + auth + "\r\n" : "") + "Proxy-Connection: close\r\n\r\n";
+      await writer.write(new TextEncoder().encode(req));
+      let buf = "";
+      while (buf.indexOf("\r\n\r\n") < 0) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise((_, reject) => {
+            const t = setTimeout(() => reject(new Error("http timeout")), timeoutMs);
+            timer = t;
+          })
+        ]);
+        if (timer) {
+          clearTimeout(timer);
+          timer = void 0;
+        }
+        if (done)
+          throw new Error("proxy closed");
+        buf += new TextDecoder().decode(value);
+        if (buf.length > 4096)
+          break;
+      }
+      const line = buf.split("\r\n")[0] || "";
+      if (!/ 200\b/.test(line))
+        throw new Error("HTTP proxy: " + line);
+    }
+    return Date.now() - start;
+  } finally {
+    if (timer)
+      clearTimeout(timer);
+    try {
+      await writer.close();
+    } catch {
+    }
+    try {
+      await reader.cancel();
+    } catch {
+    }
+    socket.close().catch(() => {
+    });
+  }
+}
+async function readExact(reader, n, timeoutMs) {
+  const chunks = [];
+  let total = 0;
+  let timer;
+  try {
+    while (total < n) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("read timeout")), timeoutMs);
+        })
+      ]);
+      if (timer) {
+        clearTimeout(timer);
+        timer = void 0;
+      }
+      if (done || !value)
+        throw new Error("socket closed");
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    if (timer)
+      clearTimeout(timer);
+  }
+  const out = new Uint8Array(n);
+  let off = 0;
+  for (const c of chunks) {
+    const take = Math.min(c.length, n - off);
+    out.set(c.subarray(0, take), off);
+    off += take;
+    if (off >= n)
+      break;
+  }
+  return out;
+}
+async function scanProxies(opts) {
+  const testHost = opts.testHost || "1.1.1.1";
+  const testPort = opts.testPort ?? 443;
+  const concurrency = Math.min(15, Math.max(1, opts.concurrency ?? 8));
+  const timeoutMs = Math.min(1e4, Math.max(2e3, opts.timeoutMs ?? 6e3));
+  const out = [];
+  let cursor = 0;
+  async function worker() {
+    while (cursor < opts.proxies.length) {
+      const idx = cursor++;
+      const raw2 = opts.proxies[idx];
+      const parsed = parseProxyUri(raw2);
+      if (!parsed) {
+        out[idx] = { target: raw2, ok: false, latencyMs: -1, error: "bad URI" };
+        continue;
+      }
+      try {
+        const ms = await testProxy(parsed, testHost, testPort, timeoutMs);
+        out[idx] = { target: raw2, ok: true, latencyMs: ms };
+      } catch (e) {
+        out[idx] = { target: raw2, ok: false, latencyMs: -1, error: e.message };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return out;
+}
+
+// src/services/cleanIps.ts
+var DEFAULT_CLEAN_IPS = [
+  "104.21.25.236",
+  "104.25.18.135",
+  "45.95.241.156",
+  "104.17.2.204",
+  "104.18.116.88",
+  "104.24.200.193",
+  "104.18.131.149",
+  "104.24.64.50",
+  "172.64.80.223",
+  "172.67.204.122",
+  "104.20.5.43",
+  "104.19.145.139",
+  "104.16.157.102",
+  "104.21.210.159",
+  "172.65.234.100",
+  "104.21.13.119",
+  "104.21.78.62",
+  "104.17.131.244",
+  "104.18.200.104",
+  "104.17.237.123",
+  "104.19.75.119",
+  "172.66.165.46",
+  "104.19.69.35",
+  "104.25.28.186",
+  "172.67.139.36",
+  "104.25.32.199",
+  "172.64.157.115",
+  "104.21.27.230",
+  "172.65.108.158",
+  "104.21.25.127",
+  "162.159.61.163",
+  "104.17.198.61",
+  "104.27.82.136",
+  "2.16.125.13",
+  "104.25.247.5",
+  "104.24.22.33",
+  "104.16.227.74",
+  "104.20.58.164",
+  "89.116.180.250",
+  "104.25.155.45",
+  "172.66.213.38",
+  "172.67.161.96",
+  "172.67.227.250",
+  "104.25.54.8",
+  "104.17.66.215",
+  "172.67.73.198",
+  "23.227.60.0",
+  "104.25.127.127",
+  "104.16.68.77",
+  "2.16.125.21",
+  "162.159.139.14",
+  "104.18.151.46",
+  "104.21.29.109",
+  "172.64.230.176",
+  "209.46.30.26",
+  "104.16.104.85",
+  "104.24.226.143",
+  "104.16.55.62",
+  "104.25.139.165",
+  "104.16.86.1",
+  "104.24.53.202",
+  "104.21.115.177",
+  "104.21.38.239",
+  "172.66.197.67",
+  "104.18.94.126",
+  "2.16.1.165",
+  "185.7.240.178",
+  "104.24.219.77",
+  "104.19.84.82",
+  "104.17.130.100",
+  "104.18.226.166",
+  "104.18.247.102",
+  "172.64.83.41",
+  "172.67.230.214",
+  "104.24.190.80",
+  "5.10.214.102",
+  "104.24.215.239",
+  "104.25.99.169",
+  "104.24.161.23",
+  "104.17.159.116"
+];
+function parseIpsField(ips) {
+  if (!ips)
+    return DEFAULT_CLEAN_IPS;
+  try {
+    if (Array.isArray(ips) && ips.length)
+      return ips.filter((x) => typeof x === "string");
+    if (typeof ips === "string") {
+      const arr = JSON.parse(ips);
+      if (Array.isArray(arr) && arr.length)
+        return arr;
+    }
+  } catch {
+  }
+  return DEFAULT_CLEAN_IPS;
+}
+
+// src/routes/scanner.ts
+var scannerRoutes = new Hono2();
+scannerRoutes.use("*", requireAuth);
+scannerRoutes.get(
+  "/preset",
+  (c) => c.json({ ips: DEFAULT_CLEAN_IPS })
+);
+scannerRoutes.post("/ips", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json();
+  let ips = (body.ips || []).map((x) => x.trim()).filter(Boolean);
+  if (!ips.length)
+    ips = DEFAULT_CLEAN_IPS;
+  if (ips.length > 200)
+    ips = ips.slice(0, 200);
+  const results = await scanIps({
+    ips,
+    port: body.port || 443,
+    concurrency: body.concurrency,
+    timeoutMs: body.timeoutMs
+  });
+  const working = results.filter((r) => r.ok).sort((a, b) => a.latencyMs - b.latencyMs);
+  return c.json({
+    total: results.length,
+    alive: working.length,
+    dead: results.length - working.length,
+    results,
+    top: working.slice(0, 20)
+  });
+});
+scannerRoutes.post("/proxies", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json();
+  if (!Array.isArray(body.proxies) || !body.proxies.length) {
+    return c.json({ error: "proxies[] required" }, 400);
+  }
+  const list = body.proxies.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 100);
+  const results = await scanProxies({
+    proxies: list,
+    testHost: body.testHost,
+    testPort: body.testPort
+  });
+  const working = results.filter((r) => r.ok).sort((a, b) => a.latencyMs - b.latencyMs);
+  return c.json({
+    total: results.length,
+    alive: working.length,
+    dead: results.length - working.length,
+    results,
+    top: working.slice(0, 30)
+  });
+});
+scannerRoutes.get("/clean", async (c) => {
+  const row = await c.env.DB.prepare("SELECT value FROM settings WHERE key = 'clean_ips'").first();
+  let ips = [];
+  if (row?.value) {
+    try {
+      ips = JSON.parse(row.value);
+    } catch {
+      ips = [];
+    }
+  }
+  return c.json({ ips: ips.length ? ips : DEFAULT_CLEAN_IPS.slice(0, 20), custom: !!ips.length });
+});
+scannerRoutes.put("/clean", requireRole("owner", "admin"), async (c) => {
+  const body = await c.req.json();
+  const ips = (body.ips || []).map((x) => x.trim()).filter(Boolean).slice(0, 50);
+  await c.env.DB.prepare(
+    "INSERT INTO settings (key, value, updated_at) VALUES ('clean_ips', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+  ).bind(JSON.stringify(ips), nowSec()).run();
+  return c.json({ ok: true, count: ips.length });
+});
+
 // src/provisioner.ts
 var BUNDLE_REF = "c9f147269dad2dfa3a7cdd038e7cd6b1ad922b05";
 var BUNDLE_BASE = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
@@ -4183,7 +4616,7 @@ async function provisionAccount(input) {
         name: "RATE_LIMIT",
         class_name: "RateLimiter"
       },
-      { type: "plain_text", name: "APP_NAME", text: "Aether Panel" },
+      { type: "plain_text", name: "APP_NAME", text: "Nikzad Panel" },
       { type: "plain_text", name: "APP_VERSION", text: "0.1.0" },
       {
         type: "plain_text",
@@ -4819,7 +5252,7 @@ async function handleMenuAction(env, chat, messageId, action) {
       env,
       chat,
       messageId,
-      "\u26A1\uFE0F <b>Aether Panel Bot</b>\n\n\u0628\u0627 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC \u067E\u0646\u0644 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC VLESS/Trojan/VMess \u0631\u0648\u06CC Cloudflare Worker \u0628\u0633\u0627\u0632\u06CC.\n\n\u2022 <b>\u062B\u0628\u062A \u062D\u0633\u0627\u0628</b>: \u06CC\u06A9 API Token \u0645\u06CC\u200C\u062F\u0647\u06CC\u060C \u0631\u0628\u0627\u062A \u062F\u0631 KV \u0646\u06AF\u0647 \u0645\u06CC\u200C\u062F\u0627\u0631\u062F.\n\u2022 <b>\u0633\u0627\u062E\u062A \u067E\u0646\u0644</b>: \u0631\u0648\u06CC \u0647\u0631 \u062D\u0633\u0627\u0628 \u06CC\u06A9 \u0648\u0631\u06A9\u0631 + D1 + KV \u0645\u06CC\u200C\u0633\u0627\u0632\u062F.\n\u2022 <b>\u0622\u067E\u062F\u06CC\u062A</b>: \u0622\u062E\u0631\u06CC\u0646 \u0633\u0648\u0631\u0633 \u06AF\u06CC\u062A\u0647\u0627\u0628 \u0631\u0648\u06CC \u0647\u0645\u0627\u0646 \u0648\u0631\u06A9\u0631 \u062F\u06CC\u067E\u0644\u0648\u06CC \u0645\u06CC\u200C\u0634\u0648\u062F.\n\u2022 <b>\u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u0631\u0645\u0632</b>: \u0631\u0645\u0632 \u0627\u0648\u0644\u06CC\u0647 \u0631\u0627 \u0646\u0645\u0627\u06CC\u0634 \u0645\u06CC\u200C\u062F\u0647\u062F.\n\n\u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC: @nikzadcr",
+      "\u26A1\uFE0F <b>Nikzad Panel Bot</b>\n\n\u0628\u0627 \u0627\u06CC\u0646 \u0631\u0628\u0627\u062A \u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC \u067E\u0646\u0644 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC VLESS/Trojan/VMess \u0631\u0648\u06CC Cloudflare Worker \u0628\u0633\u0627\u0632\u06CC.\n\n\u2022 <b>\u062B\u0628\u062A \u062D\u0633\u0627\u0628</b>: \u06CC\u06A9 API Token \u0645\u06CC\u200C\u062F\u0647\u06CC\u060C \u0631\u0628\u0627\u062A \u062F\u0631 KV \u0646\u06AF\u0647 \u0645\u06CC\u200C\u062F\u0627\u0631\u062F.\n\u2022 <b>\u0633\u0627\u062E\u062A \u067E\u0646\u0644</b>: \u0631\u0648\u06CC \u0647\u0631 \u062D\u0633\u0627\u0628 \u06CC\u06A9 \u0648\u0631\u06A9\u0631 + D1 + KV \u0645\u06CC\u200C\u0633\u0627\u0632\u062F.\n\u2022 <b>\u0622\u067E\u062F\u06CC\u062A</b>: \u0622\u062E\u0631\u06CC\u0646 \u0633\u0648\u0631\u0633 \u06AF\u06CC\u062A\u0647\u0627\u0628 \u0631\u0648\u06CC \u0647\u0645\u0627\u0646 \u0648\u0631\u06A9\u0631 \u062F\u06CC\u067E\u0644\u0648\u06CC \u0645\u06CC\u200C\u0634\u0648\u062F.\n\u2022 <b>\u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u0631\u0645\u0632</b>: \u0631\u0645\u0632 \u0627\u0648\u0644\u06CC\u0647 \u0631\u0627 \u0646\u0645\u0627\u06CC\u0634 \u0645\u06CC\u200C\u062F\u0647\u062F.\n\n\u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC: @nikzadcr",
       HOME_KB
     );
     return;
@@ -4830,7 +5263,7 @@ async function handleMsg(msg, env) {
   const chatId = msg.chat.id;
   if (text === "/start" || text === "/menu") {
     await clearState(env, chatId);
-    await sendMessage(env, chatId, "\u{1F44B} <b>\u0628\u0647 \u0631\u0628\u0627\u062A Aether Panel \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC!</b>\n\u06CC\u06A9\u06CC \u0627\u0632 \u06AF\u0632\u06CC\u0646\u0647\u200C\u0647\u0627\u06CC \u0645\u0646\u0648 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646:", { reply_markup: HOME_KB });
+    await sendMessage(env, chatId, "\u{1F44B} <b>\u0628\u0647 \u0631\u0628\u0627\u062A Nikzad Panel \u062E\u0648\u0634 \u0622\u0645\u062F\u06CC!</b>\n\u06CC\u06A9\u06CC \u0627\u0632 \u06AF\u0632\u06CC\u0646\u0647\u200C\u0647\u0627\u06CC \u0645\u0646\u0648 \u0631\u0627 \u0627\u0646\u062A\u062E\u0627\u0628 \u06A9\u0646:", { reply_markup: HOME_KB });
     return new Response("ok");
   }
   if (text === "/cancel" || text === "/stop") {
@@ -5035,7 +5468,7 @@ function escapeHtml(s) {
 function loginHtml() {
   return `<!doctype html><html lang="fa" dir="rtl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Aether \u2014 \u0648\u0631\u0648\u062F</title>
+<title>Nikzad Panel \u2014 \u0648\u0631\u0648\u062F</title>
 <link rel="icon" href="/icon.svg"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"/>
 <script src="https://cdn.tailwindcss.com"></script>
@@ -5057,9 +5490,9 @@ function loginHtml() {
 <div class="w-full max-w-md">
   <div class="text-center mb-8 float">
     <div class="inline-block logo-pulse">
-      <img src="/icon.svg" class="w-20 h-20 mx-auto" alt="Aether"/>
+      <img src="/icon.svg" class="w-20 h-20 mx-auto" alt="Nikzad"/>
     </div>
-    <h1 class="text-3xl font-black mt-4 bg-gradient-to-l from-cyan-300 to-sky-500 bg-clip-text text-transparent">AETHER PANEL</h1>
+    <h1 class="text-3xl font-black mt-4 bg-gradient-to-l from-cyan-300 via-indigo-400 to-violet-400 bg-clip-text text-transparent">NIKZAD PANEL</h1>
     <p class="text-slate-400 text-sm mt-1">Cloudflare Worker \xB7 D1 \xB7 Durable Objects</p>
   </div>
   <div class="glass rounded-3xl p-8 shadow-2xl shadow-cyan-500/5">
@@ -5078,7 +5511,7 @@ function loginHtml() {
       <p id="err" class="text-rose-400 text-sm text-center min-h-[1.25rem]"></p>
     </form>
   </div>
-  <p class="text-center text-slate-600 text-xs mt-6">Aether Panel v0.1 \xB7 MIT licensed</p>
+  <p class="text-center text-slate-600 text-xs mt-6">Nikzad Panel v1.0 \xB7 MIT licensed</p>
 </div>
 <script>
 f.addEventListener('submit', async function(e){
@@ -5101,7 +5534,7 @@ function panelHtml(version, bootstrap = false) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Aether Panel</title>
+<title>Nikzad Panel</title>
 <link rel="icon" href="/icon.svg"/>
 <link rel="manifest" href="/manifest.json"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"/>
@@ -5161,7 +5594,7 @@ function panelHtml(version, bootstrap = false) {
     .brand b { font-size:14px; }
     .brand small { font-size:8.5px; }
     .brand img { width:30px; height:30px; }
-    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
+    .bottomnav { position:fixed; left:8px; right:8px; bottom:8px; z-index:45; display:grid; grid-template-columns:repeat(5,1fr); gap:4px; padding:6px; background:rgba(8,10,18,.92); backdrop-filter:blur(18px); border:1px solid var(--border-strong); border-radius:18px; box-shadow:0 10px 30px -10px rgba(0,0,0,.7); }
     .bottomnav .nav-item { flex-direction:column; gap:2px; padding:7px 4px; font-size:10px; border-radius:12px; justify-content:center; }
     .bottomnav .nav-item svg { width:19px; height:19px; }
     main.app-main { padding:14px 12px 96px !important; }
@@ -5303,7 +5736,7 @@ function panelHtml(version, bootstrap = false) {
   <div class="glass rounded-3xl p-8 w-full max-w-md">
     <div class="text-center mb-6">
       <img src="/icon.svg" class="w-16 h-16 mx-auto mb-3" alt=""/>
-      <h1 class="text-2xl font-black bg-gradient-to-l from-cyan-300 to-sky-500 bg-clip-text text-transparent">\u0631\u0627\u0647\u200C\u0627\u0646\u062F\u0627\u0632\u06CC Aether</h1>
+      <h1 class="text-2xl font-black bg-gradient-to-l from-cyan-300 via-indigo-400 to-violet-400 bg-clip-text text-transparent">\u0631\u0627\u0647\u200C\u0627\u0646\u062F\u0627\u0632\u06CC Nikzad</h1>
       <p class="text-sm text-slate-400 mt-1">\u0627\u0648\u0644\u06CC\u0646 \u0627\u062F\u0645\u06CC\u0646 \u0631\u0627 \u0628\u0633\u0627\u0632</p>
     </div>
     <div class="space-y-3">
@@ -5320,7 +5753,7 @@ function panelHtml(version, bootstrap = false) {
     <div class="inner">
       <a class="brand" href="/panel">
         <img src="/icon.svg" alt=""/>
-        <span><b>AETHER PANEL</b><small>v${version}</small></span>
+        <span><b>NIKZAD PANEL</b><small>v${version}</small></span>
       </a>
       <nav class="topnav">
         <div class="nav-item active" data-view="dashboard">
@@ -5334,6 +5767,10 @@ function panelHtml(version, bootstrap = false) {
         <div class="nav-item" data-view="proxies">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           \u0627\u0633\u062A\u062E\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC
+        </div>
+        <div class="nav-item" data-view="scanner">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/><circle cx="12" cy="12" r="9" opacity="0.25"/></svg>
+          \u0627\u0633\u06A9\u0646\u0631
         </div>
         <div class="nav-item" data-view="settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -5465,6 +5902,66 @@ function panelHtml(version, bootstrap = false) {
       </div>
     </section>
 
+    <!-- SCANNER -->
+    <section data-page="scanner" style="display:none">
+      <div class="flex gap-2 mb-4">
+        <div class="tab active" data-scantab="ip">\u{1F310} \u0627\u0633\u06A9\u0646\u0631 IP \u062A\u0645\u06CC\u0632</div>
+        <div class="tab" data-scantab="proxy">\u{1F6E1} \u0627\u0633\u06A9\u0646\u0631 \u067E\u0631\u0648\u06A9\u0633\u06CC</div>
+      </div>
+
+      <div data-scanpane="ip">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1">\u067E\u06CC\u062F\u0627 \u06A9\u0631\u062F\u0646 \u0633\u0631\u06CC\u0639\u200C\u062A\u0631\u06CC\u0646 IP \u06A9\u0644\u0648\u062F\u0641\u0644\u0631</h2>
+          <p class="text-xs text-slate-400 mb-4">\u0627\u06CC\u0646 \u0627\u0628\u0632\u0627\u0631 \u0628\u0627 \u0627\u062A\u0635\u0627\u0644 TCP \u0645\u0633\u062A\u0642\u06CC\u0645 \u0627\u0632 \u062F\u0627\u062E\u0644 \u0648\u0631\u06A9\u0631 \u0628\u0647 \u0635\u062F\u0647\u0627 IP \u06A9\u0644\u0648\u062F\u0641\u0644\u0631\u060C \u0633\u0631\u06CC\u0639\u200C\u062A\u0631\u06CC\u0646 \u0622\u0646\u200C\u0647\u0627 \u0631\u0627 \u0628\u0631 \u0627\u0633\u0627\u0633 \u062A\u0623\u062E\u06CC\u0631 \u067E\u06CC\u062F\u0627 \u0645\u06CC\u200C\u06A9\u0646\u062F. \u0645\u06CC\u200C\u062A\u0648\u0627\u0646\u06CC IP\u0647\u0627\u06CC \u062F\u0644\u062E\u0648\u0627\u0647 \u062E\u0648\u062F\u062A \u0631\u0627 \u0647\u0645 \u0648\u0627\u0631\u062F \u06A9\u0646\u06CC.</p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <select id="ipscan-port" class="input" style="max-width:140px">
+              <option value="443">\u067E\u0648\u0631\u062A 443</option>
+              <option value="2053">2053</option>
+              <option value="2083">2083</option>
+              <option value="2087">2087</option>
+              <option value="2096">2096</option>
+              <option value="8443">8443</option>
+              <option value="80">80 (HTTP)</option>
+              <option value="8080">8080</option>
+            </select>
+            <button id="ipscan-preset" class="btn btn-ghost">\u0628\u0627\u0631\u06AF\u0630\u0627\u0631\u06CC IP\u0647\u0627\u06CC \u067E\u06CC\u0634\u200C\u0641\u0631\u0636</button>
+            <button id="ipscan-run" class="btn btn-primary">\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646</button>
+            <button id="ipscan-save" class="btn btn-violet" disabled>\u0630\u062E\u06CC\u0631\u0647 IP\u0647\u0627\u06CC \u0628\u0631\u062A\u0631</button>
+          </div>
+          <textarea id="ipscan-list" class="input mono" rows="4" dir="ltr" style="text-align:left;font-size:11px" placeholder="\u0647\u0631 IP \u062F\u0631 \u06CC\u06A9 \u062E\u0637..."></textarea>
+          <div id="ipscan-progress" class="text-xs text-slate-400 mt-3"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">\u0646\u062A\u0627\u06CC\u062C</h3>
+            <span id="ipscan-count" class="text-xs text-slate-400">\u2014</span>
+          </div>
+          <div id="ipscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+
+      <div data-scanpane="proxy" style="display:none">
+        <div class="glass rounded-2xl p-5 mb-4">
+          <h2 class="font-bold mb-1">\u062A\u0633\u062A \u067E\u0631\u0648\u06A9\u0633\u06CC\u200C\u0647\u0627</h2>
+          <p class="text-xs text-slate-400 mb-4">\u067E\u0631\u0648\u062A\u06A9\u0644\u200C\u0647\u0627\u06CC SOCKS4\u060C SOCKS5 \u0648 HTTP \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC \u0645\u06CC\u200C\u0634\u0648\u0646\u062F. \u0641\u0631\u0645\u062A: <span class="mono text-cyan-300">socks5://user:pass@host:port</span></p>
+          <div class="flex flex-wrap gap-2 mb-3">
+            <input id="pscan-test" class="input" placeholder="\u062A\u0633\u062A \u0627\u0632 \u0637\u0631\u06CC\u0642: 1.1.1.1:443" value="1.1.1.1:443" style="max-width:220px"/>
+            <button id="pscan-run" class="btn btn-primary">\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646</button>
+            <button id="pscan-import" class="btn btn-emerald">\u0627\u0641\u0632\u0648\u062F\u0646 \u0633\u0627\u0644\u0645\u200C\u0647\u0627 \u0628\u0647 \u0627\u0633\u062A\u062E\u0631</button>
+          </div>
+          <textarea id="pscan-list" class="input mono" rows="6" dir="ltr" style="text-align:left;font-size:11px" placeholder="socks5://1.2.3.4:1080&#10;socks5://user:pass@host:1080&#10;http://user:pass@host:8080"></textarea>
+          <div id="pscan-progress" class="text-xs text-slate-400 mt-3"></div>
+        </div>
+        <div class="glass rounded-2xl overflow-hidden">
+          <div class="p-4 border-b flex items-center justify-between" style="border-color:var(--border)">
+            <h3 class="font-bold">\u0646\u062A\u0627\u06CC\u062C</h3>
+            <span id="pscan-count" class="text-xs text-slate-400">\u2014</span>
+          </div>
+          <div id="pscan-results" style="max-height:460px;overflow:auto"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- SETTINGS -->
     <section data-page="settings" style="display:none">
       <div class="grid md:grid-cols-2 gap-4">
@@ -5514,6 +6011,10 @@ function panelHtml(version, bootstrap = false) {
     <div class="nav-item" data-view="proxies">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
       \u067E\u0631\u0648\u06A9\u0633\u06CC
+    </div>
+    <div class="nav-item" data-view="scanner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>
+      \u0627\u0633\u06A9\u0646\u0631
     </div>
     <div class="nav-item" data-view="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -5712,6 +6213,7 @@ function go(view){
   if (view === 'dashboard') loadDashboard();
   if (view === 'users') loadUsers();
   if (view === 'proxies') loadProxies();
+  if (view === 'scanner') initScanner();
 }
 document.querySelectorAll('.nav-item').forEach(function(n){ n.addEventListener('click', function(){
   go(n.dataset.view);
@@ -6103,6 +6605,115 @@ document.getElementById('proxy-reload').addEventListener('click', function(){
   API.post('/api/proxies/pool/reload', {}).then(function(r){ toast(r.active + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u0647\u0645\u06AF\u0627\u0645\u200C\u0633\u0627\u0632\u06CC \u0634\u062F'); }).catch(function(e){ toast(e.message,'error'); });
 });
 
+/* ---------- scanner ---------- */
+var _scanInit = false;
+function initScanner(){
+  if (_scanInit) return;
+  _scanInit = true;
+  document.querySelectorAll('[data-scantab]').forEach(function(t){
+    t.addEventListener('click', function(){
+      document.querySelectorAll('[data-scantab]').forEach(function(x){ x.classList.toggle('active', x === t); });
+      var which = t.dataset.scantab;
+      document.querySelectorAll('[data-scanpane]').forEach(function(p){
+        p.style.display = p.dataset.scanpane === which ? '' : 'none';
+      });
+    });
+  });
+  document.getElementById('ipscan-preset').addEventListener('click', function(){
+    API.get('/api/scanner/preset').then(function(r){
+      document.getElementById('ipscan-list').value = r.ips.join('\\n');
+    });
+  });
+  document.getElementById('ipscan-run').addEventListener('click', runIpScan);
+  document.getElementById('ipscan-save').addEventListener('click', saveCleanIps);
+  document.getElementById('pscan-run').addEventListener('click', runProxyScan);
+  document.getElementById('pscan-import').addEventListener('click', importAliveProxies);
+}
+var _scanAliveIps = [];
+async function runIpScan(){
+  var raw = document.getElementById('ipscan-list').value;
+  var ips = raw.split(/[\\s,]+/).map(function(x){return x.trim();}).filter(Boolean);
+  var port = parseInt(document.getElementById('ipscan-port').value, 10) || 443;
+  if (!ips.length) return toast('\u0644\u06CC\u0633\u062A IP \u062E\u0627\u0644\u06CC \u0627\u0633\u062A', 'error');
+  var btn = document.getElementById('ipscan-run');
+  btn.disabled = true; btn.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u0627\u0633\u06A9\u0646...';
+  var prog = document.getElementById('ipscan-progress');
+  prog.textContent = '\u0627\u0633\u06A9\u0646 ' + ips.length + ' IP \u0631\u0648\u06CC \u067E\u0648\u0631\u062A ' + port + ' ...';
+  var t0 = Date.now();
+  try {
+    var r = await API.post('/api/scanner/ips', { ips: ips, port: port, concurrency: 20, timeoutMs: 4000 });
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    document.getElementById('ipscan-count').textContent = r.alive + ' \u0633\u0627\u0644\u0645 \u0627\u0632 ' + r.total + ' \u062F\u0631 ' + elapsed + 's';
+    prog.textContent = '\u2705 ' + r.alive + ' \u067E\u0627\u0633\u062E \u062F\u0627\u062F\u0646\u062F\u060C ' + r.dead + ' \u062E\u0637\u0627 \u062F\u0627\u0634\u062A\u0646\u062F.';
+    _scanAliveIps = r.top;
+    var rows = r.results.slice().sort(function(a,b){
+      if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
+      return a.ok ? -1 : 1;
+    }).map(function(x){
+      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
+                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
+      return '<tr><td class="mono" dir="ltr" style="text-align:left">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    }).join('');
+    document.getElementById('ipscan-results').innerHTML =
+      '<table><thead><tr><th>IP</th><th>\u062A\u0623\u062E\u06CC\u0631</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('ipscan-save').disabled = r.alive === 0;
+    if (r.alive) toast(r.alive + ' IP \u0633\u0627\u0644\u0645 \u067E\u06CC\u062F\u0627 \u0634\u062F');
+  } catch(e){ toast(e.message, 'error'); prog.textContent = '\u062E\u0637\u0627: ' + e.message; }
+  btn.disabled = false; btn.textContent = '\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646';
+}
+async function saveCleanIps(){
+  if (!_scanAliveIps.length) return;
+  var ips = _scanAliveIps.slice(0, 20).map(function(x){return x.target;});
+  try {
+    await API.put('/api/scanner/clean', { ips: ips });
+    toast(ips.length + ' IP \u0628\u0647\u200C\u0639\u0646\u0648\u0627\u0646 IP \u062A\u0645\u06CC\u0632 \u067E\u06CC\u0634\u200C\u0641\u0631\u0636 \u0630\u062E\u06CC\u0631\u0647 \u0634\u062F');
+  } catch(e){ toast(e.message, 'error'); }
+}
+var _scanAliveProxies = [];
+async function runProxyScan(){
+  var raw = document.getElementById('pscan-list').value;
+  var proxies = raw.split('\\n').map(function(x){return x.trim();}).filter(Boolean);
+  var target = document.getElementById('pscan-test').value.trim() || '1.1.1.1:443';
+  var parts = target.split(':');
+  if (!proxies.length) return toast('\u0644\u06CC\u0633\u062A \u067E\u0631\u0648\u06A9\u0633\u06CC \u062E\u0627\u0644\u06CC \u0627\u0633\u062A', 'error');
+  var btn = document.getElementById('pscan-run');
+  btn.disabled = true; btn.textContent = '\u062F\u0631 \u062D\u0627\u0644 \u0627\u0633\u06A9\u0646...';
+  var prog = document.getElementById('pscan-progress');
+  prog.textContent = '\u062A\u0633\u062A ' + proxies.length + ' \u067E\u0631\u0648\u06A9\u0633\u06CC...';
+  var t0 = Date.now();
+  try {
+    var r = await API.post('/api/scanner/proxies', {
+      proxies: proxies, testHost: parts[0], testPort: parseInt(parts[1],10)||443
+    });
+    var elapsed = ((Date.now()-t0)/1000).toFixed(1);
+    document.getElementById('pscan-count').textContent = r.alive + ' \u0633\u0627\u0644\u0645 \u0627\u0632 ' + r.total + ' \u062F\u0631 ' + elapsed + 's';
+    prog.textContent = '\u2705 ' + r.alive + ' \u0633\u0627\u0644\u0645\u060C ' + r.dead + ' \u0646\u0627\u0645\u0648\u0641\u0642.';
+    _scanAliveProxies = r.top;
+    var sorted = r.results.slice().sort(function(a,b){
+      if (a.ok && b.ok) return a.latencyMs - b.latencyMs;
+      return a.ok ? -1 : 1;
+    });
+    var rows = sorted.map(function(x){
+      var ms = x.ok ? '<span class="text-emerald-400 font-bold mono">' + x.latencyMs + 'ms</span>'
+                    : '<span class="text-rose-400 text-xs">' + esc(x.error||'fail') + '</span>';
+      return '<tr><td class="mono text-[11px]" dir="ltr" style="text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.target) + '</td><td>' + ms + '</td></tr>';
+    }).join('');
+    document.getElementById('pscan-results').innerHTML =
+      '<table><thead><tr><th>\u067E\u0631\u0648\u06A9\u0633\u06CC</th><th>\u062A\u0623\u062E\u06CC\u0631</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('pscan-import').disabled = r.alive === 0;
+  } catch(e){ toast(e.message, 'error'); prog.textContent = '\u062E\u0637\u0627: ' + e.message; }
+  btn.disabled = false; btn.textContent = '\u0634\u0631\u0648\u0639 \u0627\u0633\u06A9\u0646';
+}
+async function importAliveProxies(){
+  if (!_scanAliveProxies.length) return;
+  var list = _scanAliveProxies.map(function(x){return x.target;});
+  try {
+    var r = await API.post('/api/proxies/import', { list: list, source: 'scanner' });
+    toast(r.imported + ' \u067E\u0631\u0648\u06A9\u0633\u06CC \u0628\u0647 \u0627\u0633\u062A\u062E\u0631 \u0627\u0636\u0627\u0641\u0647 \u0634\u062F');
+    loadProxies();
+  } catch(e){ toast(e.message, 'error'); }
+}
+
 /* ---------- modal helpers ---------- */
 function openModal(id){ document.getElementById(id).classList.add('open'); }
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
@@ -6150,105 +6761,6 @@ function statusHtml(user, subLinks) {
   return '<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>' + esc(String(user.username || "user")) + ' \u2014 \u0648\u0636\u0639\u06CC\u062A</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css"/><script src="https://cdn.tailwindcss.com"></script><style>body{font-family:Vazirmatn;background:#000;color:#e5e7eb;min-height:100vh;background:radial-gradient(ellipse at top,rgba(34,211,238,.12),transparent 60%),#000}.glass{background:rgba(10,12,20,.72);backdrop-filter:blur(18px);border:1px solid rgba(148,163,184,.12)}</style></head><body class="grid place-items-center p-4"><div class="w-full max-w-md glass rounded-3xl p-7"><div class="flex items-center gap-3 mb-5"><img src="/icon.svg" class="w-12 h-12"/><div><h1 class="text-xl font-black">' + esc(String(user.username || "")) + '</h1><p class="text-xs text-slate-400">\u0635\u0641\u062D\u0647 \u0648\u0636\u0639\u06CC\u062A \u06A9\u0627\u0631\u0628\u0631</p></div></div><div class="space-y-3 text-sm"><div class="flex justify-between p-3 rounded-xl" style="background:rgba(148,163,184,.05)"><span class="text-slate-400">\u062D\u062C\u0645 \u0645\u0635\u0631\u0641\u200C\u0634\u062F\u0647</span><span class="font-bold text-cyan-400">' + usedGb.toFixed(2) + ' GB</span></div><div class="flex justify-between p-3 rounded-xl" style="background:rgba(148,163,184,.05)"><span class="text-slate-400">\u0633\u0642\u0641</span><span class="font-bold">' + (limitGb == null ? "\u221E" : limitGb.toFixed(2) + " GB") + '</span></div><div class="h-2 rounded-full overflow-hidden" style="background:rgba(148,163,184,.1)"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#22d3ee,#0ea5e9)"></div></div><div class="flex justify-between p-3 rounded-xl" style="background:rgba(148,163,184,.05)"><span class="text-slate-400">\u0627\u0646\u0642\u0636\u0627</span><span class="font-bold">' + (user.expiry_days == null ? "\u221E" : esc(String(user.expiry_days)) + " \u0631\u0648\u0632") + '</span></div><div class="flex justify-between p-3 rounded-xl" style="background:rgba(148,163,184,.05)"><span class="text-slate-400">\u062F\u0631\u062E\u0648\u0627\u0633\u062A\u200C\u0647\u0627</span><span class="font-bold">' + esc(String(user.used_req || 0)) + '</span></div></div><a class="mt-5 inline-flex w-full justify-center items-center gap-2 py-3 rounded-xl font-bold" style="background:linear-gradient(135deg,#22d3ee,#0ea5e9);color:#00131c" href="/sub/' + encodeURIComponent(String(user.username || "")) + '">\u062F\u0631\u06CC\u0627\u0641\u062A \u0644\u06CC\u0646\u06A9 \u0627\u0634\u062A\u0631\u0627\u06A9</a><pre style="display:none" id="cfg">' + esc(subLinks) + "</pre></div></body></html>";
 }
 
-// src/services/cleanIps.ts
-var DEFAULT_CLEAN_IPS = [
-  "104.21.25.236",
-  "104.25.18.135",
-  "45.95.241.156",
-  "104.17.2.204",
-  "104.18.116.88",
-  "104.24.200.193",
-  "104.18.131.149",
-  "104.24.64.50",
-  "172.64.80.223",
-  "172.67.204.122",
-  "104.20.5.43",
-  "104.19.145.139",
-  "104.16.157.102",
-  "104.21.210.159",
-  "172.65.234.100",
-  "104.21.13.119",
-  "104.21.78.62",
-  "104.17.131.244",
-  "104.18.200.104",
-  "104.17.237.123",
-  "104.19.75.119",
-  "172.66.165.46",
-  "104.19.69.35",
-  "104.25.28.186",
-  "172.67.139.36",
-  "104.25.32.199",
-  "172.64.157.115",
-  "104.21.27.230",
-  "172.65.108.158",
-  "104.21.25.127",
-  "162.159.61.163",
-  "104.17.198.61",
-  "104.27.82.136",
-  "2.16.125.13",
-  "104.25.247.5",
-  "104.24.22.33",
-  "104.16.227.74",
-  "104.20.58.164",
-  "89.116.180.250",
-  "104.25.155.45",
-  "172.66.213.38",
-  "172.67.161.96",
-  "172.67.227.250",
-  "104.25.54.8",
-  "104.17.66.215",
-  "172.67.73.198",
-  "23.227.60.0",
-  "104.25.127.127",
-  "104.16.68.77",
-  "2.16.125.21",
-  "162.159.139.14",
-  "104.18.151.46",
-  "104.21.29.109",
-  "172.64.230.176",
-  "209.46.30.26",
-  "104.16.104.85",
-  "104.24.226.143",
-  "104.16.55.62",
-  "104.25.139.165",
-  "104.16.86.1",
-  "104.24.53.202",
-  "104.21.115.177",
-  "104.21.38.239",
-  "172.66.197.67",
-  "104.18.94.126",
-  "2.16.1.165",
-  "185.7.240.178",
-  "104.24.219.77",
-  "104.19.84.82",
-  "104.17.130.100",
-  "104.18.226.166",
-  "104.18.247.102",
-  "172.64.83.41",
-  "172.67.230.214",
-  "104.24.190.80",
-  "5.10.214.102",
-  "104.24.215.239",
-  "104.25.99.169",
-  "104.24.161.23",
-  "104.17.159.116"
-];
-function parseIpsField(ips) {
-  if (!ips)
-    return DEFAULT_CLEAN_IPS;
-  try {
-    if (Array.isArray(ips) && ips.length)
-      return ips.filter((x) => typeof x === "string");
-    if (typeof ips === "string") {
-      const arr = JSON.parse(ips);
-      if (Array.isArray(arr) && arr.length)
-        return arr;
-    }
-  } catch {
-  }
-  return DEFAULT_CLEAN_IPS;
-}
-
 // src/services/subscription.ts
 var TLS_PORTS = /* @__PURE__ */ new Set(["443", "2053", "2083", "2087", "2096", "8443"]);
 async function generateSubscription(user, ctx, format = "base64") {
@@ -6268,7 +6780,7 @@ async function generateSubscription(user, ctx, format = "base64") {
   const noise = [
     "# Sub Update: OK",
     "# Random Code: " + Math.random().toString(36).slice(2, 10),
-    "# Aether Panel",
+    "# Nikzad Panel",
     ""
   ].join("\n");
   const plain = noise + links.join("\n");
@@ -6284,7 +6796,9 @@ function buildLinks(user, ctx) {
   const fp = user.fingerprint || "chrome";
   const path = "/" + Math.random().toString(36).slice(2, 12);
   const pathEnc = encodeURIComponent(path);
-  const ips = parseIpsField(user.ips).slice(0, 30);
+  const userIps = parseIpsField(user.ips);
+  const pool = userIps.length ? userIps : ctx.cleanIps && ctx.cleanIps.length ? ctx.cleanIps : DEFAULT_CLEAN_IPS;
+  const ips = pool.slice(0, 30);
   const ports = String(user.port || "443").split(",").map((p) => p.trim()).filter(Boolean);
   const connType = String(user.connection_type || "vless").toLowerCase();
   const enableVless = connType.includes("vless") || !connType.includes("trojan");
@@ -6297,7 +6811,7 @@ function buildLinks(user, ctx) {
     for (const portStr of ports) {
       const isTls = TLS_PORTS.has(portStr);
       const sec = isTls ? "tls" : "none";
-      const remark = "Aether|" + user.username + "|" + ip;
+      const remark = "Nikzad|" + user.username + "|" + ip;
       const encRemark = encodeURIComponent(remark);
       if (enableVless) {
         out.push(
@@ -6330,19 +6844,26 @@ function buildLinks(user, ctx) {
   }
   return out;
 }
+function cleanIpFor(ctx, user) {
+  const userIps = parseIpsField(user.ips);
+  if (userIps.length)
+    return userIps[0];
+  const pool = ctx.cleanIps && ctx.cleanIps.length ? ctx.cleanIps : DEFAULT_CLEAN_IPS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 function buildClash(user, ctx, _links) {
   const host = ctx.host;
   const sni = user.sni_host || host;
-  const ip = parseIpsField(user.ips)[0] || DEFAULT_CLEAN_IPS[0];
+  const ip = cleanIpFor(ctx, user);
   const directDomains = parseList(user.route_direct);
   const blockDomains = parseList(user.route_block);
   const directRules = directDomains.map((d) => "  - DOMAIN-SUFFIX," + d + ",DIRECT").join("\n");
   const blockRules = blockDomains.map((d) => "  - DOMAIN-SUFFIX," + d + ",REJECT").join("\n");
-  return '# Aether Panel Clash configuration\nmixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\nipv6: true\ndns:\n  enable: true\n  listen: 0.0.0.0:53\n  default-nameserver: [1.1.1.1, 8.8.8.8]\n  nameserver: [https://cloudflare-dns.com/dns-query, https://dns.google/dns-query]\nproxies:\n  - name: "aether-' + user.username + '"\n    type: vless\n    server: ' + ip + "\n    port: " + (user.port || 443) + "\n    uuid: " + user.uuid + "\n    network: ws\n    tls: true\n    servername: " + sni + '\n    ws-opts:\n      path: "/"\n      headers:\n        Host: ' + sni + "\n    client-fingerprint: " + (user.fingerprint || "chrome") + '\nproxy-groups:\n  - name: PROXY\n    type: select\n    proxies: ["aether-' + user.username + '"]\nrules:\n' + (directRules ? directRules + "\n" : "") + (blockRules ? blockRules + "\n" : "") + "  - GEOIP,IR,DIRECT\n  - MATCH,PROXY\n";
+  return '# Nikzad Panel Clash configuration\nmixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\nipv6: true\ndns:\n  enable: true\n  listen: 0.0.0.0:53\n  default-nameserver: [1.1.1.1, 8.8.8.8]\n  nameserver: [https://cloudflare-dns.com/dns-query, https://dns.google/dns-query]\nproxies:\n  - name: "aether-' + user.username + '"\n    type: vless\n    server: ' + ip + "\n    port: " + (user.port || 443) + "\n    uuid: " + user.uuid + "\n    network: ws\n    tls: true\n    servername: " + sni + '\n    ws-opts:\n      path: "/"\n      headers:\n        Host: ' + sni + "\n    client-fingerprint: " + (user.fingerprint || "chrome") + '\nproxy-groups:\n  - name: PROXY\n    type: select\n    proxies: ["aether-' + user.username + '"]\nrules:\n' + (directRules ? directRules + "\n" : "") + (blockRules ? blockRules + "\n" : "") + "  - GEOIP,IR,DIRECT\n  - MATCH,PROXY\n";
 }
 function buildSingBox(user, ctx, _links) {
   const sni = user.sni_host || ctx.host;
-  const ip = parseIpsField(user.ips)[0] || DEFAULT_CLEAN_IPS[0];
+  const ip = cleanIpFor(ctx, user);
   return {
     log: { level: "info" },
     dns: {
@@ -6620,26 +7141,55 @@ var RateLimiter = class {
 // src/ui/assets.ts
 var ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <radialGradient id="g" cx="50%" cy="40%" r="60%">
+    <linearGradient id="ng-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#05070f"/>
+    </linearGradient>
+    <linearGradient id="ng-hex" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#22d3ee"/>
-      <stop offset="100%" stop-color="#0369a1"/>
+      <stop offset="55%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="ng-mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a5f3fc"/>
+      <stop offset="100%" stop-color="#67e8f9"/>
+    </linearGradient>
+    <radialGradient id="ng-glow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
     </radialGradient>
+    <filter id="ng-blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
   </defs>
-  <rect width="512" height="512" rx="112" fill="#020617"/>
-  <rect x="48" y="48" width="416" height="416" rx="88" fill="url(#g)" opacity="0.18"/>
-  <g transform="translate(128,96) scale(16)" fill="none" stroke="#67e8f9" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round">
-    <path d="M4 22 L14 2 L14 12 L22 12 L10 30 L10 20 L4 20 Z"/>
+  <rect width="512" height="512" rx="112" fill="url(#ng-bg)"/>
+  <circle cx="256" cy="236" r="180" fill="url(#ng-glow)"/>
+  <!-- outer hexagon -->
+  <path d="M256 56 L428 152 L428 360 L256 456 L84 360 L84 152 Z"
+        fill="none" stroke="url(#ng-hex)" stroke-width="6" stroke-linejoin="round" opacity="0.85"/>
+  <!-- inner accent hex -->
+  <path d="M256 104 L390 180 L390 332 L256 408 L122 332 L122 180 Z"
+        fill="url(#ng-hex)" opacity="0.10"/>
+  <!-- lightning / N mark -->
+  <g filter="url(#ng-blur)" opacity="0.55">
+    <path d="M214 150 L306 150 L250 246 L320 246 L210 380 L240 282 L178 282 Z"
+          fill="#22d3ee"/>
   </g>
+  <path d="M214 150 L306 150 L250 246 L320 246 L210 380 L240 282 L178 282 Z"
+        fill="url(#ng-mark)"/>
+  <!-- orbit dot -->
+  <circle cx="394" cy="170" r="9" fill="#a855f7"/>
+  <circle cx="118" cy="342" r="6" fill="#22d3ee"/>
 </svg>`;
 var PWA_MANIFEST = JSON.stringify({
-  name: "Aether Panel",
-  short_name: "Aether",
-  description: "Modern Cloudflare Worker proxy panel",
+  name: "Nikzad Panel",
+  short_name: "Nikzad",
+  description: "\u067E\u0646\u0644 \u0627\u062E\u062A\u0635\u0627\u0635\u06CC \u067E\u0631\u0648\u06A9\u0633\u06CC \u0631\u0648\u06CC Cloudflare Worker",
   start_url: "/panel",
   scope: "/",
   display: "standalone",
-  background_color: "#07090d",
-  theme_color: "#07090d",
+  background_color: "#05070f",
+  theme_color: "#05070f",
   dir: "rtl",
   lang: "fa-IR",
   orientation: "any",
@@ -6649,7 +7199,7 @@ var PWA_MANIFEST = JSON.stringify({
   categories: ["utilities", "productivity"]
 });
 var SW_JS = `
-const CACHE = "aether-v1";
+const CACHE = "nikzad-v2";
 self.addEventListener("install", (e) => { self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(self.clients.claim()); });
 self.addEventListener("fetch", (e) => {
@@ -6683,6 +7233,7 @@ app.route("/api/auth", authRoutes);
 app.route("/api/users", userRoutes);
 app.route("/api/proxies", proxyRoutes);
 app.route("/api/system", systemRoutes);
+app.route("/api/scanner", scannerRoutes);
 app.post("/tg/webhook", async (c) => {
   if (!c.env.TELEGRAM_TOKEN)
     return c.text("bot disabled", 404);
@@ -6710,6 +7261,18 @@ app.get("/api/stats", async (c) => {
     usedReq: req?.s ?? 0
   });
 });
+async function getCleanIps(env) {
+  const r = await env.DB.prepare("SELECT value FROM settings WHERE key='clean_ips'").first();
+  if (r?.value) {
+    try {
+      const arr = JSON.parse(r.value);
+      if (Array.isArray(arr) && arr.length)
+        return arr;
+    } catch {
+    }
+  }
+  return void 0;
+}
 app.get("/sub/:user", async (c) => {
   const username = decodeURIComponent(c.req.param("user"));
   const row = await c.env.DB.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE OR uuid = ?").bind(username, username).first();
@@ -6719,7 +7282,8 @@ app.get("/sub/:user", async (c) => {
   const { body, contentType } = await generateSubscription(row, {
     host: new URL(c.req.url).hostname,
     port: row.port ?? 443,
-    tls: row.tls !== "off"
+    tls: row.tls !== "off",
+    cleanIps: await getCleanIps(c.env)
   }, fmt);
   const ua = (c.req.header("user-agent") || "").toLowerCase();
   if (!ua.includes("mozilla") && !ua.includes("chrome")) {
@@ -6742,7 +7306,8 @@ app.get("/status/:user", async (c) => {
   const { body } = await generateSubscription(row, {
     host: new URL(c.req.url).hostname,
     port: row.port ?? 443,
-    tls: row.tls !== "off"
+    tls: row.tls !== "off",
+    cleanIps: await getCleanIps(c.env)
   }, "raw");
   return c.html(statusHtml(row, body));
 });
