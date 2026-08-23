@@ -164,28 +164,31 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
 
   // 10b. Wait for tables then insert admin directly via /api/auth/setup
   // (which accepts username+password in the body and only succeeds if no
-  // admins exist yet). The /auto-bootstrap approach relies on a secret
-  // binding that may not be ready immediately after deploy.
+  // admins exist yet). We poll both setup + login until login works.
   const panelBase = "https://" + workerName + "." + subdomain + ".workers.dev";
   const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 15; i++) {
     try {
-      // Try setup (harmless if already initialized; returns 400 then).
-      await fetch(panelBase + "/api/auth/setup", {
+      const sr = await fetch(panelBase + "/api/auth/setup", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: setupBody,
-      }).catch(() => {});
+      });
+      const stext = await sr.text().catch(() => "");
       const lr = await fetch(panelBase + "/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: loginBody,
       });
       if (lr.ok) { loginOk = true; break; }
-    } catch {
-      /* retry */
+      if (i % 3 === 0) {
+        const ltext = await lr.text().catch(() => "");
+        console.log("bootstrap poll", i, "setup=", sr.status, stext.slice(0,80), "login=", lr.status, ltext.slice(0,80));
+      }
+    } catch (e) {
+      if (i % 3 === 0) console.log("bootstrap poll", i, "err:", (e as Error).message);
     }
     await new Promise((res) => setTimeout(res, 2000));
   }

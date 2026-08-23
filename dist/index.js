@@ -4231,14 +4231,14 @@ async function provisionAccount(input) {
   const setupBody = JSON.stringify({ username: adminUser, password: adminPassword });
   const loginBody = JSON.stringify({ username: adminUser, password: adminPassword });
   let loginOk = false;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 15; i++) {
     try {
-      await fetch(panelBase + "/api/auth/setup", {
+      const sr = await fetch(panelBase + "/api/auth/setup", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: setupBody
-      }).catch(() => {
       });
+      const stext = await sr.text().catch(() => "");
       const lr = await fetch(panelBase + "/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -4248,7 +4248,13 @@ async function provisionAccount(input) {
         loginOk = true;
         break;
       }
-    } catch {
+      if (i % 3 === 0) {
+        const ltext = await lr.text().catch(() => "");
+        console.log("bootstrap poll", i, "setup=", sr.status, stext.slice(0, 80), "login=", lr.status, ltext.slice(0, 80));
+      }
+    } catch (e) {
+      if (i % 3 === 0)
+        console.log("bootstrap poll", i, "err:", e.message);
     }
     await new Promise((res) => setTimeout(res, 2e3));
   }
