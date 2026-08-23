@@ -379,15 +379,32 @@ async function applyD1Schema(
 ): Promise<void> {
   const res = await fetch(SCHEMA_URL + "?v=" + Date.now());
   if (!res.ok) return;
-  const sql = await res.text();
-  // split on semicolons for individual statements
-  const stmts = sql.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean);
+  let sql = await res.text();
+  // strip SQL comments (lines starting with --) which D1 rejects
+  sql = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
+  // Split on semicolons; keep statements non-empty. The D1 query endpoint
+  // accepts one statement per call.
+  const stmts = sql
+    .split(/;(?:\s|\n|$)/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !s.startsWith("PRAGMA"));
   for (const stmt of stmts) {
-    await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ sql: stmt }),
-    }).catch(() => {});
+    try {
+      const r = await fetch(api + "/accounts/" + accountId + "/d1/database/" + d1Id + "/query", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sql: stmt }),
+      });
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        // "already exists" is fine; log others but continue
+        if (!/already exists|duplicate/i.test(body)) {
+          console.warn("D1 schema stmt failed:", stmt.slice(0, 80), body.slice(0, 200));
+        }
+      }
+    } catch (e) {
+      console.warn("D1 schema fetch error:", (e as Error).message);
+    }
   }
 }
 
