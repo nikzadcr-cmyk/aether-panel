@@ -4099,7 +4099,7 @@ async function syncPool(env) {
 }
 
 // src/provisioner.ts
-var BUNDLE_REF = "085a32d5734ed359c613b57fa72bd769ca43d9f2";
+var BUNDLE_REF = "8d05533acca854313d43214e8a7e9c447cda4f42";
 var BUNDLE_BASE = "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
 var WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
 var SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";

@@ -37,7 +37,7 @@ export interface ProvisionResult {
 // exact bundle we built+tested. raw.githubusercontent.com caches @main for
 // ~5 minutes which caused users to deploy stale bundles on first build.
 // Bump this to git rev-parse HEAD after every release.
-export const BUNDLE_REF = "085a32d5734ed359c613b57fa72bd769ca43d9f2";
+export const BUNDLE_REF = "8d05533acca854313d43214e8a7e9c447cda4f42";
 const BUNDLE_BASE =
   "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/" + BUNDLE_REF + "/";
 const WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
