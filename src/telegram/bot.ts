@@ -40,12 +40,19 @@ type ChatState = {
 
 const HOME_KB = {
   inline_keyboard: [
-    [{ text: "➕ ثبت حساب کلودفلر", callback_data: "menu:register" }],
-    [{ text: "🚀 ساخت پنل جدید", callback_data: "menu:build" }],
-    [{ text: "🔄 آپدیت پنل", callback_data: "menu:update" }],
-    [{ text: "🔑 بازیابی رمز", callback_data: "menu:recover" }],
-    [{ text: "📊 لیست حساب‌ها", callback_data: "menu:list" }],
-    [{ text: "ℹ️ راهنما", callback_data: "menu:help" }],
+    [
+      { text: "➕ ثبت حساب", callback_data: "menu:register" },
+      { text: "🚀 ساخت پنل", callback_data: "menu:build" },
+    ],
+    [
+      { text: "🔄 آپدیت پنل", callback_data: "menu:update" },
+      { text: "🔑 بازیابی رمز", callback_data: "menu:recover" },
+    ],
+    [
+      { text: "📊 لیست حساب‌ها", callback_data: "menu:list" },
+      { text: "🗑 حذف حساب", callback_data: "menu:delete" },
+    ],
+    [{ text: "ℹ️ راهنما و پشتیبانی", callback_data: "menu:help" }],
   ],
 };
 
@@ -57,12 +64,31 @@ function accountPickerKb(
   accounts: StoredAccount[],
   action: "build" | "update" | "recover" | "list"
 ): { inline_keyboard: unknown[][] } {
-  const rows = accounts.map((a) => {
-    const icon = a.panel ? "✅" : "⬜";
-    const label = icon + " " + truncate(a.name, 22) + (a.panel ? " · ساخته‌شده" : "");
-    return [{ text: label, callback_data: "acct:" + a.id + ":" + action }];
-  });
-  rows.push([{ text: "→ بازگشت", callback_data: "menu:home" }]);
+  // For "build", show each account as a full-width button (the label
+  // includes name + status and needs room). For other actions use a
+  // 2-column layout when there are several accounts.
+  const rows: unknown[][] = [];
+  if (action === "build" || accounts.length <= 3) {
+    for (const a of accounts) {
+      const icon = a.panel ? "✅" : "⬜";
+      const label = icon + " " + truncate(a.name, 26) + (a.panel ? " · ساخته‌شده" : "");
+      rows.push([{ text: label, callback_data: "acct:" + a.id + ":" + action }]);
+    }
+  } else {
+    for (let i = 0; i < accounts.length; i += 2) {
+      const row = [];
+      for (let j = 0; j < 2 && i + j < accounts.length; j++) {
+        const a = accounts[i + j]!;
+        const icon = a.panel ? "✅" : "⬜";
+        row.push({
+          text: icon + " " + truncate(a.name, 14),
+          callback_data: "acct:" + a.id + ":" + action,
+        });
+      }
+      rows.push(row);
+    }
+  }
+  rows.push([{ text: "→ بازگشت به منوی اصلی", callback_data: "menu:home" }]);
   return { inline_keyboard: rows };
 }
 
@@ -183,6 +209,37 @@ async function handleCb(cb: CbQuery, env: Env): Promise<Response> {
       await showAccountDetail(env, chat, cb.message!.message_id, acc);
       return new Response("ok");
     }
+    if (arg === "confirmdelete") {
+      await answerCb(env, cb.id);
+      const kb = {
+        inline_keyboard: [
+          [
+            { text: "✅ بله، حذف کن", callback_data: "acct:" + acc.id + ":dodelete" },
+            { text: "❌ لغو", callback_data: "menu:list" },
+          ],
+        ],
+      };
+      await editText(
+        env, chat, cb.message!.message_id,
+        "مطمئنی می‌خوای حساب <b>" + escapeHtml(acc.name) + "</b> از ربات حذف بشه؟",
+        kb
+      );
+      return new Response("ok");
+    }
+    if (arg === "dodelete") {
+      await answerCb(env, cb.id, "حذف شد");
+      const all = (await getState(env, chat.id)) || { accounts: [] };
+      all.accounts = (all.accounts || []).filter((a) => a.id !== acc.id);
+      await setState(env, chat.id, all);
+      const remaining = all.accounts?.length || 0;
+      await editText(
+        env, chat, cb.message!.message_id,
+        "✅ حساب <b>" + escapeHtml(acc.name) + "</b> از ربات حذف شد." +
+          (remaining ? "\n" + remaining + " حساب باقی مانده." : "\nدیگر حسابی نداری."),
+        HOME_KB
+      );
+      return new Response("ok");
+    }
   }
 
   await answerCb(env, cb.id);
@@ -233,6 +290,28 @@ async function handleMenuAction(env: Env, chat: Chat, messageId: number, action:
       return (i + 1) + ". <b>" + escapeHtml(a.name) + "</b> — " + status;
     }).join("\n");
     await editText(env, chat, messageId, text, accountPickerKb(accs, "list"));
+    return;
+  }
+
+  if (action === "delete") {
+    if (!accs.length) {
+      await editText(env, chat, messageId, "حسابی برای حذف وجود ندارد.", HOME_KB);
+      return;
+    }
+    const kb = {
+      inline_keyboard: [
+        ...accs.map((a) => [{
+          text: "🗑 " + truncate(a.name, 24) + (a.panel ? " · ✅" : ""),
+          callback_data: "acct:" + a.id + ":confirmdelete",
+        }]),
+        [{ text: "→ بازگشت", callback_data: "menu:home" }],
+      ],
+    };
+    await editText(
+      env, chat, messageId,
+      "🗑 کدام حساب از ربات حذف شود؟\n<i>(فقط اطلاعات توکن از ربات پاک می‌شود، پنل روی کلودفلر دست نمی‌خورد)</i>",
+      kb
+    );
     return;
   }
 
@@ -424,7 +503,9 @@ async function getState(env: Env, chatId: number): Promise<ChatState | null> {
   }
 }
 async function setState(env: Env, chatId: number, state: ChatState): Promise<void> {
-  await env.KV.put("tgstate:" + chatId, JSON.stringify(state), { expirationTtl: 60 * 60 * 24 * 30 });
+  // Persist permanently (no TTL) — the user explicitly said tokens should
+  // stay around; security is not a concern for this bot.
+  await env.KV.put("tgstate:" + chatId, JSON.stringify(state));
 }
 async function clearState(env: Env, chatId: number): Promise<void> {
   await env.KV.delete("tgstate:" + chatId);
@@ -453,14 +534,37 @@ export async function sendMessage(
 async function editText(
   env: Env, chat: Chat, messageId: number, text: string, extra: Record<string, unknown> = {}
 ): Promise<void> {
+  // Normalize keyboard: callers pass either { inline_keyboard: [...] } or
+  // { reply_markup: { inline_keyboard: [...] } }. Telegram expects the
+  // latter — wrap if we see the raw form.
+  const payload: Record<string, unknown> = {
+    chat_id: chat.id, message_id: messageId, text, parse_mode: "HTML",
+    disable_web_page_preview: true,
+  };
+  if (extra.reply_markup) {
+    payload.reply_markup = extra.reply_markup;
+  } else if (extra.inline_keyboard) {
+    payload.reply_markup = { inline_keyboard: extra.inline_keyboard };
+  }
+  for (const [k, v] of Object.entries(extra)) {
+    if (k !== "inline_keyboard" && k !== "reply_markup") payload[k] = v;
+  }
   if (!messageId) {
-    await sendMessage(env, chat.id, text, extra);
+    const r = await api(env.TELEGRAM_TOKEN!, "sendMessage", {
+      chat_id: chat.id, text, parse_mode: "HTML", disable_web_page_preview: true,
+      reply_markup: payload.reply_markup,
+    });
+    await r.json().catch(() => null);
     return;
   }
-  await api(env.TELEGRAM_TOKEN!, "editMessageText", {
-    chat_id: chat.id, message_id: messageId, text, parse_mode: "HTML",
-    disable_web_page_preview: true, ...extra,
-  });
+  const r = await api(env.TELEGRAM_TOKEN!, "editMessageText", payload);
+  if (!r.ok) {
+    const errText = await r.text().catch(() => "");
+    // "message is not modified" is harmless; log other errors.
+    if (!/not modified|message to edit not found/i.test(errText)) {
+      console.warn("tg editMessageText failed:", r.status, errText.slice(0, 300));
+    }
+  }
 }
 
 async function answerCb(env: Env, id: string, text?: string, alert?: boolean): Promise<void> {

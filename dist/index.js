@@ -4528,24 +4528,47 @@ function randomReadablePassword() {
 // src/telegram/bot.ts
 var HOME_KB = {
   inline_keyboard: [
-    [{ text: "\u2795 \u062B\u0628\u062A \u062D\u0633\u0627\u0628 \u06A9\u0644\u0648\u062F\u0641\u0644\u0631", callback_data: "menu:register" }],
-    [{ text: "\u{1F680} \u0633\u0627\u062E\u062A \u067E\u0646\u0644 \u062C\u062F\u06CC\u062F", callback_data: "menu:build" }],
-    [{ text: "\u{1F504} \u0622\u067E\u062F\u06CC\u062A \u067E\u0646\u0644", callback_data: "menu:update" }],
-    [{ text: "\u{1F511} \u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u0631\u0645\u0632", callback_data: "menu:recover" }],
-    [{ text: "\u{1F4CA} \u0644\u06CC\u0633\u062A \u062D\u0633\u0627\u0628\u200C\u0647\u0627", callback_data: "menu:list" }],
-    [{ text: "\u2139\uFE0F \u0631\u0627\u0647\u0646\u0645\u0627", callback_data: "menu:help" }]
+    [
+      { text: "\u2795 \u062B\u0628\u062A \u062D\u0633\u0627\u0628", callback_data: "menu:register" },
+      { text: "\u{1F680} \u0633\u0627\u062E\u062A \u067E\u0646\u0644", callback_data: "menu:build" }
+    ],
+    [
+      { text: "\u{1F504} \u0622\u067E\u062F\u06CC\u062A \u067E\u0646\u0644", callback_data: "menu:update" },
+      { text: "\u{1F511} \u0628\u0627\u0632\u06CC\u0627\u0628\u06CC \u0631\u0645\u0632", callback_data: "menu:recover" }
+    ],
+    [
+      { text: "\u{1F4CA} \u0644\u06CC\u0633\u062A \u062D\u0633\u0627\u0628\u200C\u0647\u0627", callback_data: "menu:list" },
+      { text: "\u{1F5D1} \u062D\u0630\u0641 \u062D\u0633\u0627\u0628", callback_data: "menu:delete" }
+    ],
+    [{ text: "\u2139\uFE0F \u0631\u0627\u0647\u0646\u0645\u0627 \u0648 \u067E\u0634\u062A\u06CC\u0628\u0627\u0646\u06CC", callback_data: "menu:help" }]
   ]
 };
 function BACK_TO_HOME() {
   return { inline_keyboard: [[{ text: "\u2192 \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", callback_data: "menu:home" }]] };
 }
 function accountPickerKb(accounts, action) {
-  const rows = accounts.map((a) => {
-    const icon = a.panel ? "\u2705" : "\u2B1C";
-    const label = icon + " " + truncate(a.name, 22) + (a.panel ? " \xB7 \u0633\u0627\u062E\u062A\u0647\u200C\u0634\u062F\u0647" : "");
-    return [{ text: label, callback_data: "acct:" + a.id + ":" + action }];
-  });
-  rows.push([{ text: "\u2192 \u0628\u0627\u0632\u06AF\u0634\u062A", callback_data: "menu:home" }]);
+  const rows = [];
+  if (action === "build" || accounts.length <= 3) {
+    for (const a of accounts) {
+      const icon = a.panel ? "\u2705" : "\u2B1C";
+      const label = icon + " " + truncate(a.name, 26) + (a.panel ? " \xB7 \u0633\u0627\u062E\u062A\u0647\u200C\u0634\u062F\u0647" : "");
+      rows.push([{ text: label, callback_data: "acct:" + a.id + ":" + action }]);
+    }
+  } else {
+    for (let i = 0; i < accounts.length; i += 2) {
+      const row = [];
+      for (let j = 0; j < 2 && i + j < accounts.length; j++) {
+        const a = accounts[i + j];
+        const icon = a.panel ? "\u2705" : "\u2B1C";
+        row.push({
+          text: icon + " " + truncate(a.name, 14),
+          callback_data: "acct:" + a.id + ":" + action
+        });
+      }
+      rows.push(row);
+    }
+  }
+  rows.push([{ text: "\u2192 \u0628\u0627\u0632\u06AF\u0634\u062A \u0628\u0647 \u0645\u0646\u0648\u06CC \u0627\u0635\u0644\u06CC", callback_data: "menu:home" }]);
   return { inline_keyboard: rows };
 }
 function truncate(s, n) {
@@ -4667,6 +4690,40 @@ async function handleCb(cb, env) {
       await showAccountDetail(env, chat, cb.message.message_id, acc);
       return new Response("ok");
     }
+    if (arg === "confirmdelete") {
+      await answerCb(env, cb.id);
+      const kb = {
+        inline_keyboard: [
+          [
+            { text: "\u2705 \u0628\u0644\u0647\u060C \u062D\u0630\u0641 \u06A9\u0646", callback_data: "acct:" + acc.id + ":dodelete" },
+            { text: "\u274C \u0644\u063A\u0648", callback_data: "menu:list" }
+          ]
+        ]
+      };
+      await editText(
+        env,
+        chat,
+        cb.message.message_id,
+        "\u0645\u0637\u0645\u0626\u0646\u06CC \u0645\u06CC\u200C\u062E\u0648\u0627\u06CC \u062D\u0633\u0627\u0628 <b>" + escapeHtml(acc.name) + "</b> \u0627\u0632 \u0631\u0628\u0627\u062A \u062D\u0630\u0641 \u0628\u0634\u0647\u061F",
+        kb
+      );
+      return new Response("ok");
+    }
+    if (arg === "dodelete") {
+      await answerCb(env, cb.id, "\u062D\u0630\u0641 \u0634\u062F");
+      const all = await getState(env, chat.id) || { accounts: [] };
+      all.accounts = (all.accounts || []).filter((a) => a.id !== acc.id);
+      await setState(env, chat.id, all);
+      const remaining = all.accounts?.length || 0;
+      await editText(
+        env,
+        chat,
+        cb.message.message_id,
+        "\u2705 \u062D\u0633\u0627\u0628 <b>" + escapeHtml(acc.name) + "</b> \u0627\u0632 \u0631\u0628\u0627\u062A \u062D\u0630\u0641 \u0634\u062F." + (remaining ? "\n" + remaining + " \u062D\u0633\u0627\u0628 \u0628\u0627\u0642\u06CC \u0645\u0627\u0646\u062F\u0647." : "\n\u062F\u06CC\u06AF\u0631 \u062D\u0633\u0627\u0628\u06CC \u0646\u062F\u0627\u0631\u06CC."),
+        HOME_KB
+      );
+      return new Response("ok");
+    }
   }
   await answerCb(env, cb.id);
   return new Response("ok");
@@ -4704,6 +4761,29 @@ async function handleMenuAction(env, chat, messageId, action) {
       return i + 1 + ". <b>" + escapeHtml(a.name) + "</b> \u2014 " + status;
     }).join("\n");
     await editText(env, chat, messageId, text, accountPickerKb(accs, "list"));
+    return;
+  }
+  if (action === "delete") {
+    if (!accs.length) {
+      await editText(env, chat, messageId, "\u062D\u0633\u0627\u0628\u06CC \u0628\u0631\u0627\u06CC \u062D\u0630\u0641 \u0648\u062C\u0648\u062F \u0646\u062F\u0627\u0631\u062F.", HOME_KB);
+      return;
+    }
+    const kb = {
+      inline_keyboard: [
+        ...accs.map((a) => [{
+          text: "\u{1F5D1} " + truncate(a.name, 24) + (a.panel ? " \xB7 \u2705" : ""),
+          callback_data: "acct:" + a.id + ":confirmdelete"
+        }]),
+        [{ text: "\u2192 \u0628\u0627\u0632\u06AF\u0634\u062A", callback_data: "menu:home" }]
+      ]
+    };
+    await editText(
+      env,
+      chat,
+      messageId,
+      "\u{1F5D1} \u06A9\u062F\u0627\u0645 \u062D\u0633\u0627\u0628 \u0627\u0632 \u0631\u0628\u0627\u062A \u062D\u0630\u0641 \u0634\u0648\u062F\u061F\n<i>(\u0641\u0642\u0637 \u0627\u0637\u0644\u0627\u0639\u0627\u062A \u062A\u0648\u06A9\u0646 \u0627\u0632 \u0631\u0628\u0627\u062A \u067E\u0627\u06A9 \u0645\u06CC\u200C\u0634\u0648\u062F\u060C \u067E\u0646\u0644 \u0631\u0648\u06CC \u06A9\u0644\u0648\u062F\u0641\u0644\u0631 \u062F\u0633\u062A \u0646\u0645\u06CC\u200C\u062E\u0648\u0631\u062F)</i>",
+      kb
+    );
     return;
   }
   if (action === "build" || action === "update" || action === "recover") {
@@ -4881,7 +4961,7 @@ async function getState(env, chatId) {
   }
 }
 async function setState(env, chatId, state) {
-  await env.KV.put("tgstate:" + chatId, JSON.stringify(state), { expirationTtl: 60 * 60 * 24 * 30 });
+  await env.KV.put("tgstate:" + chatId, JSON.stringify(state));
 }
 async function clearState(env, chatId) {
   await env.KV.delete("tgstate:" + chatId);
@@ -4905,18 +4985,40 @@ async function sendMessage(env, chatId, text, extra = {}) {
   return j.ok && j.result ? j.result.message_id : 0;
 }
 async function editText(env, chat, messageId, text, extra = {}) {
-  if (!messageId) {
-    await sendMessage(env, chat.id, text, extra);
-    return;
-  }
-  await api(env.TELEGRAM_TOKEN, "editMessageText", {
+  const payload = {
     chat_id: chat.id,
     message_id: messageId,
     text,
     parse_mode: "HTML",
-    disable_web_page_preview: true,
-    ...extra
-  });
+    disable_web_page_preview: true
+  };
+  if (extra.reply_markup) {
+    payload.reply_markup = extra.reply_markup;
+  } else if (extra.inline_keyboard) {
+    payload.reply_markup = { inline_keyboard: extra.inline_keyboard };
+  }
+  for (const [k, v] of Object.entries(extra)) {
+    if (k !== "inline_keyboard" && k !== "reply_markup")
+      payload[k] = v;
+  }
+  if (!messageId) {
+    const r2 = await api(env.TELEGRAM_TOKEN, "sendMessage", {
+      chat_id: chat.id,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_markup: payload.reply_markup
+    });
+    await r2.json().catch(() => null);
+    return;
+  }
+  const r = await api(env.TELEGRAM_TOKEN, "editMessageText", payload);
+  if (!r.ok) {
+    const errText = await r.text().catch(() => "");
+    if (!/not modified|message to edit not found/i.test(errText)) {
+      console.warn("tg editMessageText failed:", r.status, errText.slice(0, 300));
+    }
+  }
 }
 async function answerCb(env, id, text, alert) {
   await api(env.TELEGRAM_TOKEN, "answerCallbackQuery", {
