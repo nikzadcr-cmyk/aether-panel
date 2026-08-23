@@ -27,11 +27,13 @@ export interface ProvisionResult {
   error?: string;
 }
 
-const WORKER_SOURCE_URL =
-  "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/dist/index.js";
-
-const SCHEMA_URL =
-  "https://cdn.jsdelivr.net/gh/nikzadcr-cmyk/aether-panel@main/migrations/0001_init.sql";
+// We use raw.githubusercontent.com with a short cache-busting query so
+// newly-provisioned panels always run the latest committed bundle. jsDelivr
+// caches @main aggressively and was serving stale code.
+const BUNDLE_BASE =
+  "https://raw.githubusercontent.com/nikzadcr-cmyk/aether-panel/main/";
+const WORKER_SOURCE_URL = BUNDLE_BASE + "dist/index.js";
+const SCHEMA_URL = BUNDLE_BASE + "migrations/0001_init.sql";
 
 export async function provisionAccount(input: ProvisionInput): Promise<ProvisionResult> {
   const token = input.token.trim();
@@ -74,7 +76,7 @@ export async function provisionAccount(input: ProvisionInput): Promise<Provision
   // 4. Queue
   await ensureQueue(api, headers, accountId, queueName);
   // 5. fetch worker source
-  const srcRes = await fetch(WORKER_SOURCE_URL);
+  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
   if (!srcRes.ok) throw new Error("دریافت سورس ورکر از گیت‌هاب ناموفق بود");
   const workerJs = await srcRes.text();
 
@@ -260,7 +262,7 @@ export async function updateWorkerDeployment(input: {
     if (sdj.success && sdj.result?.subdomain) subdomain = sdj.result.subdomain;
   } catch { /* default */ }
 
-  const srcRes = await fetch(WORKER_SOURCE_URL);
+  const srcRes = await fetch(WORKER_SOURCE_URL + "?v=" + Date.now());
   if (!srcRes.ok) throw new Error("دریافت سورس جدید ناموفق بود");
   const workerJs = await srcRes.text();
 
@@ -365,7 +367,7 @@ async function applyD1Schema(
   accountId: string,
   d1Id: string
 ): Promise<void> {
-  const res = await fetch(SCHEMA_URL);
+  const res = await fetch(SCHEMA_URL + "?v=" + Date.now());
   if (!res.ok) return;
   const sql = await res.text();
   // split on semicolons for individual statements
